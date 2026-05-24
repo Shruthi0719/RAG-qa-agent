@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  rag-api:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data          # persist index and uploaded docs
+      - ./frontend:/app/frontend  # live-reload frontend changes
+    env_file:
+      - .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

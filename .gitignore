@@ -1,0 +1,14 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+data/faiss_index/
+data/docs.pkl
+data/file_manifest.json
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
