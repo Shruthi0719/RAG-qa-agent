@@ -33,9 +33,96 @@
       overflow: hidden;
     }
 
+    /* ── App Loader ── */
+    #app-loader {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 99999;
+      transition: opacity 0.6s ease;
+    }
+    #app-loader.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .loader-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      text-align: center;
+      padding: 40px;
+    }
+    .loader-logo {
+      width: 72px; height: 72px;
+      background: linear-gradient(135deg, var(--accent), #a78bfa);
+      border-radius: 20px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 2rem;
+      box-shadow: 0 8px 32px rgba(108, 99, 255, 0.35);
+      animation: logoPulse 2s ease-in-out infinite;
+    }
+    @keyframes logoPulse {
+      0%, 100% { transform: scale(1);    box-shadow: 0 8px 32px rgba(108,99,255,0.35); }
+      50%       { transform: scale(1.06); box-shadow: 0 12px 40px rgba(108,99,255,0.55); }
+    }
+    .loader-title {
+      font-size: 1.6rem;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.02em;
+    }
+    .loader-subtitle {
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      margin-top: -10px;
+    }
+    .loader-bar-wrap {
+      width: 240px;
+      height: 3px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .loader-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), #a78bfa);
+      border-radius: 99px;
+      animation: loaderSlide 1.6s ease-in-out infinite;
+    }
+    @keyframes loaderSlide {
+      0%   { width: 0%;   margin-left: 0%;   }
+      50%  { width: 60%;  margin-left: 20%;  }
+      100% { width: 0%;   margin-left: 100%; }
+    }
+    .loader-status {
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      min-height: 1.2em;
+      transition: opacity 0.3s;
+    }
+    .loader-dots {
+      display: flex; gap: 6px; align-items: center;
+    }
+    .loader-dot {
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: dotBounce 1.2s ease-in-out infinite;
+    }
+    .loader-dot:nth-child(2) { animation-delay: 0.2s; }
+    .loader-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes dotBounce {
+      0%, 80%, 100% { transform: translateY(0);    opacity: 0.5; }
+      40%            { transform: translateY(-6px); opacity: 1;   }
+    }
+
     /* ── Sidebar ── */
     #sidebar {
-      width: 290px;
+      width: 280px;
       background: var(--surface);
       border-right: 1px solid var(--border);
       display: flex;
@@ -86,7 +173,7 @@
     .upload-area {
       border: 2px dashed var(--border);
       border-radius: var(--radius);
-      padding: 18px 12px;
+      padding: 20px 12px;
       text-align: center;
       cursor: pointer;
       transition: border-color 0.2s, background 0.2s;
@@ -98,63 +185,23 @@
 
     #file-input { display: none; }
 
-    /* ── Document list (uploaded files on server) ── */
-    .doc-list { display: flex; flex-direction: column; gap: 4px; }
-    .doc-item {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      padding: 7px 10px;
-      background: var(--surface2);
-      border-radius: 8px;
-      font-size: 0.78rem;
-      color: var(--text-muted);
-      border: 1px solid transparent;
-      transition: border-color 0.15s;
-    }
-    .doc-item:hover { border-color: var(--border); }
-    .doc-item .doc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-    .doc-badge {
-      font-size: 0.65rem;
-      padding: 1px 6px;
-      border-radius: 10px;
-      flex-shrink: 0;
-    }
-    .doc-badge.indexed { background: #1a3a2a; color: var(--success); }
-    .doc-badge.pending { background: #3a2a10; color: var(--warning); }
-    .doc-item .del-btn {
-      background: none; border: none; color: var(--error);
-      cursor: pointer; font-size: 0.9rem; padding: 0 2px;
-      flex-shrink: 0; opacity: 0.6; transition: opacity 0.15s;
-    }
-    .doc-item .del-btn:hover { opacity: 1; }
-    .doc-size { font-size: 0.68rem; color: var(--text-muted); flex-shrink: 0; }
-
-    /* ── Pending upload queue ── */
-    .pending-list { display: flex; flex-direction: column; gap: 4px; }
-    .pending-item {
+    .file-list { display: flex; flex-direction: column; gap: 4px; }
+    .file-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
       padding: 6px 10px;
-      background: #1a2030;
-      border: 1px dashed var(--border);
+      background: var(--surface2);
       border-radius: 8px;
       font-size: 0.78rem;
       color: var(--text-muted);
       gap: 6px;
     }
-    .pending-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-    .pending-item .del-btn {
-      background: none; border: none; color: var(--text-muted);
-      cursor: pointer; font-size: 0.85rem; padding: 0 2px; flex-shrink: 0;
-    }
-
-    .empty-docs {
-      text-align: center;
-      color: var(--text-muted);
-      font-size: 0.78rem;
-      padding: 8px 0;
+    .file-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .file-item .del-btn {
+      background: none; border: none; color: var(--error);
+      cursor: pointer; font-size: 0.85rem; padding: 0 2px;
+      flex-shrink: 0;
     }
 
     .btn {
@@ -340,13 +387,14 @@
       flex-shrink: 0;
     }
     #send-btn:hover { background: var(--accent-hover); }
-    #send-btn:active { transform: scale(0.94); }
-    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #send-btn:active { transform: scale(0.92); }
+    #send-btn:disabled { background: var(--border); cursor: not-allowed; }
 
     /* ── Toast ── */
     #toast-container {
       position: fixed; bottom: 24px; right: 24px;
-      display: flex; flex-direction: column; gap: 8px; z-index: 999;
+      display: flex; flex-direction: column; gap: 8px;
+      z-index: 9999;
     }
     .toast {
       background: var(--surface);
@@ -363,7 +411,6 @@
     .toast.success { border-left: 3px solid var(--success); }
     .toast.error   { border-left: 3px solid var(--error); }
     .toast.info    { border-left: 3px solid var(--accent); }
-    .toast.warning { border-left: 3px solid var(--warning); }
 
     /* Progress bar */
     .progress-bar-wrap {
@@ -379,29 +426,6 @@
       100% { transform: translateX(350%); }
     }
 
-    /* Confirm dialog */
-    #confirm-overlay {
-      display: none;
-      position: fixed; inset: 0;
-      background: rgba(0,0,0,0.6);
-      z-index: 1000;
-      align-items: center; justify-content: center;
-    }
-    #confirm-overlay.show { display: flex; }
-    #confirm-box {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 24px;
-      max-width: 320px;
-      width: 90%;
-      display: flex; flex-direction: column; gap: 16px;
-    }
-    #confirm-box h3 { font-size: 1rem; }
-    #confirm-box p { font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; }
-    #confirm-box .confirm-btns { display: flex; gap: 8px; }
-    #confirm-box .confirm-btns .btn { flex: 1; }
-
     @media (max-width: 680px) {
       #sidebar { display: none; }
     }
@@ -409,15 +433,23 @@
 </head>
 <body>
 
-<!-- Confirm dialog -->
-<div id="confirm-overlay">
-  <div id="confirm-box">
-    <h3 id="confirm-title">Confirm</h3>
-    <p id="confirm-msg"></p>
-    <div class="confirm-btns">
-      <button class="btn btn-secondary" onclick="confirmResolve(false)">Cancel</button>
-      <button class="btn btn-danger" onclick="confirmResolve(true)">Delete</button>
+<!-- ── App Loading Screen ── -->
+<div id="app-loader">
+  <div class="loader-content">
+    <div class="loader-logo">🔍</div>
+    <div>
+      <div class="loader-title">RAG Q&A Agent</div>
+      <div class="loader-subtitle">Powered by Groq · HuggingFace · FAISS</div>
     </div>
+    <div class="loader-bar-wrap">
+      <div class="loader-bar-fill"></div>
+    </div>
+    <div class="loader-dots">
+      <div class="loader-dot"></div>
+      <div class="loader-dot"></div>
+      <div class="loader-dot"></div>
+    </div>
+    <div class="loader-status" id="loader-status">Initializing…</div>
   </div>
 </div>
 
@@ -436,15 +468,14 @@
 
   <!-- Upload -->
   <div class="sidebar-section">
-    <span class="sidebar-label">Add Documents</span>
+    <span class="sidebar-label">Documents</span>
     <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
       <div class="upload-icon">📄</div>
       Drop files or click to upload<br>
       <small>PDF · TXT · DOCX · MD · HTML · CSV</small>
     </div>
     <input type="file" id="file-input" multiple accept=".pdf,.txt,.docx,.md,.html,.htm,.csv" />
-    <!-- Pending (not yet uploaded) -->
-    <div class="pending-list" id="pending-list"></div>
+    <div class="file-list" id="file-list"></div>
   </div>
 
   <!-- Ingest -->
@@ -453,17 +484,6 @@
     <button class="btn btn-secondary" onclick="doIngest(true)">🔄 Full Rebuild</button>
     <div class="progress-bar-wrap" id="ingest-progress" style="display:none">
       <div class="progress-bar"></div>
-    </div>
-  </div>
-
-  <!-- Indexed Documents -->
-  <div class="sidebar-section">
-    <div style="display:flex;align-items:center;justify-content:space-between">
-      <span class="sidebar-label">Indexed Documents</span>
-      <button class="btn btn-secondary" style="padding:3px 8px;font-size:0.7rem" onclick="loadDocuments()" title="Refresh file list">↻</button>
-    </div>
-    <div class="doc-list" id="doc-list">
-      <div class="empty-docs">No documents yet</div>
     </div>
   </div>
 
@@ -509,29 +529,68 @@
 <div id="toast-container"></div>
 
 <script>
-const API = '';   // same origin
+const API = '';
 let sessionId = localStorage.getItem('rag_session') || null;
 let isStreaming = false;
 
-// ── Confirm dialog ────────────────────────────────────────────────────────────
-let _confirmResolve = null;
-function showConfirm(title, msg) {
-  document.getElementById('confirm-title').textContent = title;
-  document.getElementById('confirm-msg').textContent = msg;
-  document.getElementById('confirm-overlay').classList.add('show');
-  return new Promise(res => { _confirmResolve = res; });
-}
-function confirmResolve(val) {
-  document.getElementById('confirm-overlay').classList.remove('show');
-  if (_confirmResolve) { _confirmResolve(val); _confirmResolve = null; }
+// ── Loading Screen ────────────────────────────────────────────────────────────
+const loaderMessages = [
+  'Initializing…',
+  'Connecting to server…',
+  'Loading document index…',
+  'Almost ready…',
+];
+let loaderMsgIdx = 0;
+
+function cycleLoaderMsg() {
+  const el = document.getElementById('loader-status');
+  if (!el) return;
+  el.style.opacity = '0';
+  setTimeout(() => {
+    loaderMsgIdx = (loaderMsgIdx + 1) % loaderMessages.length;
+    el.textContent = loaderMessages[loaderMsgIdx];
+    el.style.opacity = '1';
+  }, 300);
 }
 
-// ── Startup ───────────────────────────────────────────────────────────────────
+const loaderInterval = setInterval(cycleLoaderMsg, 1800);
+
+function hideLoader() {
+  clearInterval(loaderInterval);
+  const loader = document.getElementById('app-loader');
+  loader.classList.add('hidden');
+  setTimeout(() => loader.remove(), 700);
+}
+
+// ── Startup ──────────────────────────────────────────────────────────────────
 (async function init() {
   updateSessionDisplay();
-  await Promise.all([loadStats(), loadDocuments()]);
-  setInterval(loadStats, 10000);
-  setInterval(loadDocuments, 15000);
+
+  // Poll /health until server is up, then hide loader
+  let attempts = 0;
+  const maxAttempts = 30;
+
+  async function waitForServer() {
+    try {
+      const r = await fetch(`${API}/health`);
+      if (r.ok) {
+        document.getElementById('loader-status').textContent = 'Ready!';
+        await loadStats();
+        setTimeout(hideLoader, 600);
+        setInterval(loadStats, 10000);
+        return;
+      }
+    } catch {}
+    attempts++;
+    if (attempts < maxAttempts) {
+      setTimeout(waitForServer, 1500);
+    } else {
+      document.getElementById('loader-status').textContent = 'Taking longer than usual…';
+      setTimeout(hideLoader, 2000);
+    }
+  }
+
+  await waitForServer();
 })();
 
 async function loadStats() {
@@ -549,73 +608,7 @@ async function loadStats() {
   } catch {}
 }
 
-// ── Document Management ───────────────────────────────────────────────────────
-async function loadDocuments() {
-  try {
-    const r = await fetch(`${API}/documents`);
-    if (!r.ok) return;
-    const { files } = await r.json();
-    renderDocList(files);
-  } catch {}
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function renderDocList(files) {
-  const list = document.getElementById('doc-list');
-  if (!files || !files.length) {
-    list.innerHTML = '<div class="empty-docs">No documents yet</div>';
-    return;
-  }
-  list.innerHTML = '';
-  files.forEach(f => {
-    const el = document.createElement('div');
-    el.className = 'doc-item';
-    const badge = f.indexed
-      ? '<span class="doc-badge indexed">indexed</span>'
-      : '<span class="doc-badge pending">not indexed</span>';
-    el.innerHTML = `
-      <span class="doc-name" title="${f.filename}">📄 ${f.filename}</span>
-      ${badge}
-      <span class="doc-size">${formatBytes(f.size_bytes)}</span>
-      <button class="del-btn" title="Delete ${f.filename}" onclick="deleteDocument('${f.filename}')">🗑</button>
-    `;
-    list.appendChild(el);
-  });
-}
-
-async function deleteDocument(filename) {
-  const confirmed = await showConfirm(
-    'Delete document',
-    `Delete "${filename}" and rebuild the index? This cannot be undone.`
-  );
-  if (!confirmed) return;
-
-  toast(`Deleting ${filename}…`, 'info');
-  try {
-    const r = await fetch(`${API}/document/${encodeURIComponent(filename)}`, { method: 'DELETE' });
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || 'Delete failed');
-    toast(`Deleted "${filename}" and rebuilt index.`, 'success');
-    await Promise.all([loadStats(), loadDocuments()]);
-    session_store_clear_hint();
-  } catch (e) {
-    toast(`Error: ${e.message}`, 'error');
-  }
-}
-
-function session_store_clear_hint() {
-  // Index rebuilt — old session chain is stale
-  sessionId = null;
-  localStorage.removeItem('rag_session');
-  updateSessionDisplay();
-}
-
-// ── Session ───────────────────────────────────────────────────────────────────
+// ── Session ──────────────────────────────────────────────────────────────────
 function updateSessionDisplay() {
   document.getElementById('session-display').textContent =
     sessionId ? sessionId.slice(0, 18) + '…' : 'Auto (new on first chat)';
@@ -650,30 +643,24 @@ function handleFiles(files) {
   files.forEach(f => {
     if (!pendingFiles.find(x => x.name === f.name)) pendingFiles.push(f);
   });
-  renderPendingList();
+  renderFileList();
 }
 
-function renderPendingList() {
-  const list = document.getElementById('pending-list');
+function renderFileList() {
+  const list = document.getElementById('file-list');
   list.innerHTML = '';
-  if (!pendingFiles.length) return;
-  const label = document.createElement('div');
-  label.className = 'sidebar-label';
-  label.style.marginTop = '4px';
-  label.textContent = `Pending upload (${pendingFiles.length})`;
-  list.appendChild(label);
   pendingFiles.forEach((f, i) => {
     const el = document.createElement('div');
-    el.className = 'pending-item';
-    el.innerHTML = `<span title="${f.name}">📎 ${f.name}</span>
-      <button class="del-btn" onclick="removePending(${i})">✕</button>`;
+    el.className = 'file-item';
+    el.innerHTML = `<span title="${f.name}">📄 ${f.name}</span>
+      <button class="del-btn" onclick="removeFile(${i})">✕</button>`;
     list.appendChild(el);
   });
 }
 
-function removePending(i) {
+function removeFile(i) {
   pendingFiles.splice(i, 1);
-  renderPendingList();
+  renderFileList();
 }
 
 async function uploadPendingFiles() {
@@ -691,11 +678,11 @@ async function uploadPendingFiles() {
       toast(`Upload failed: ${err.detail}`, 'error');
     }
   }
-  renderPendingList();
+  renderFileList();
   return uploaded;
 }
 
-// ── Ingest ─────────────────────────────────────────────────────────────────────
+// ── Ingest ────────────────────────────────────────────────────────────────────
 async function doIngest(full = false) {
   const btn = document.getElementById('ingest-btn');
   const prog = document.getElementById('ingest-progress');
@@ -714,7 +701,7 @@ async function doIngest(full = false) {
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || 'Ingest failed');
     toast(`${d.message} (${d.num_chunks} chunks)`, 'success');
-    await Promise.all([loadStats(), loadDocuments()]);
+    await loadStats();
   } catch (e) {
     toast(`Ingest error: ${e.message}`, 'error');
   } finally {
@@ -723,7 +710,7 @@ async function doIngest(full = false) {
   }
 }
 
-// ── Messaging ──────────────────────────────────────────────────────────────────
+// ── Messaging ─────────────────────────────────────────────────────────────────
 const messagesEl = document.getElementById('messages');
 const emptyState = document.getElementById('empty-state');
 const inputEl = document.getElementById('question-input');
@@ -743,37 +730,30 @@ function clearMessages() {
   emptyState.style.display = 'flex';
 }
 
-function hideEmpty() { emptyState.style.display = 'none'; }
+function hideEmpty() {
+  emptyState.style.display = 'none';
+}
 
-/**
- * Append a message bubble. Returns an object { contentEl, sourcesEl }
- * so sources can be injected after streaming finishes.
- */
 function appendMsg(role, text, sources = []) {
   hideEmpty();
   const wrap = document.createElement('div');
   wrap.className = `msg ${role}`;
   const avatar = role === 'user' ? '👤' : '🤖';
+  const sourcesHtml = sources.length
+    ? `<div class="sources-row">${sources.map(s => {
+        const page = s.page != null ? ` p.${s.page}` : '';
+        return `<span class="source-tag">📄 ${s.file}${page}</span>`;
+      }).join('')}</div>`
+    : '';
   wrap.innerHTML = `
     <div class="avatar">${avatar}</div>
     <div class="bubble">
-      <div class="content"></div>
-      <div class="sources-row"></div>
+      <div class="content">${escHtml(text)}</div>
+      ${sourcesHtml}
     </div>`;
-  const contentEl = wrap.querySelector('.content');
-  const sourcesRow = wrap.querySelector('.sources-row');
-  contentEl.innerHTML = escHtml(text);
-  if (sources.length) renderSources(sourcesRow, sources);
   messagesEl.appendChild(wrap);
   messagesEl.scrollTop = messagesEl.scrollHeight;
-  return { contentEl, sourcesRow };
-}
-
-function renderSources(container, sources) {
-  container.innerHTML = sources.map(s => {
-    const page = s.page != null ? ` p.${s.page}` : '';
-    return `<span class="source-tag">📄 ${s.file}${page}</span>`;
-  }).join('');
+  return wrap.querySelector('.content');
 }
 
 function addThinking() {
@@ -809,8 +789,7 @@ async function sendMessage() {
   sendBtn.disabled = true;
 
   addThinking();
-  let botEls = null;   // { contentEl, sourcesRow }
-  let fullText = '';
+  let botContentEl = null;
 
   try {
     const res = await fetch(`${API}/chat/stream`, {
@@ -825,7 +804,8 @@ async function sendMessage() {
     }
 
     removeThinking();
-    botEls = appendMsg('bot', '');
+    botContentEl = appendMsg('bot', '');
+    let fullText = '';
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -842,8 +822,6 @@ async function sendMessage() {
         const payload = line.slice(6);
         if (payload === '[DONE]') break;
         if (payload.startsWith('[ERROR]')) { toast(payload, 'error'); break; }
-
-        // First SSE frame: session_id JSON
         if (payload.startsWith('{')) {
           try {
             const meta = JSON.parse(payload);
@@ -855,52 +833,21 @@ async function sendMessage() {
           } catch {}
           continue;
         }
-
         fullText += payload.replace(/\\n/g, '\n');
-        botEls.contentEl.innerHTML = escHtml(fullText);
+        botContentEl.textContent = fullText;
         messagesEl.scrollTop = messagesEl.scrollHeight;
       }
     }
 
-    // ── After stream ends: fetch sources via non-streaming /chat ─────────────
-    // We re-ask the same question but only use its sources (answer already streamed).
-    // Using a short non-streaming call to get source metadata.
-    if (botEls && fullText && !fullText.startsWith('⚠️')) {
-      fetchAndDisplaySources(q, botEls.sourcesRow);
-    }
-
   } catch (e) {
     removeThinking();
-    if (!botEls) appendMsg('bot', `⚠️ ${e.message}`);
+    if (!botContentEl) appendMsg('bot', `⚠️ ${e.message}`);
     toast(e.message, 'error');
   } finally {
     isStreaming = false;
     sendBtn.disabled = false;
     await loadStats();
   }
-}
-
-/**
- * After streaming completes, call /chat (non-streaming) with same question
- * to retrieve source metadata, then display the source tags.
- * We use a separate session to avoid polluting memory with a duplicate turn;
- * the sources come from the retrieval step which is deterministic.
- */
-async function fetchAndDisplaySources(question, sourcesRow) {
-  try {
-    const r = await fetch(`${API}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question, session_id: null }),  // throwaway session
-    });
-    if (!r.ok) return;
-    const d = await r.json();
-    if (d.sources && d.sources.length) {
-      renderSources(sourcesRow, d.sources);
-      // Clean up throwaway session
-      try { await fetch(`${API}/sessions/${d.session_id}`, { method: 'DELETE' }); } catch {}
-    }
-  } catch {}
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -914,7 +861,7 @@ function toast(msg, type = 'info') {
   el.className = `toast ${type}`;
   el.textContent = msg;
   document.getElementById('toast-container').appendChild(el);
-  setTimeout(() => el.remove(), 4500);
+  setTimeout(() => el.remove(), 4000);
 }
 </script>
 </body>
