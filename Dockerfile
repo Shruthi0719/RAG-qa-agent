@@ -2,9 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for unstructured
+# Install only minimal system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libmagic1 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -21,5 +21,4 @@ RUN mkdir -p data/docs data/faiss_index
 
 EXPOSE 8000
 
-# Railway injects $PORT; fall back to 8000 for local / docker-compose
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

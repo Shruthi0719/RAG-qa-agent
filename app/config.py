@@ -9,8 +9,11 @@ from pydantic import Field
 class Settings(BaseSettings):
     # LLM
     GROQ_API_KEY: str = Field(..., description="Groq API key")
-    LLM_MODEL: str = Field("llama3-8b-8192", description="Groq model to use")
+    LLM_MODEL: str = Field("llama-3.1-8b-instant", description="Groq model to use")
     LLM_TEMPERATURE: float = Field(0.0, ge=0.0, le=1.0)
+
+    # HuggingFace Inference API (for embeddings — no local model needed)
+    HF_API_KEY: str = Field(..., description="HuggingFace API token")
 
     # Chunking
     CHUNK_SIZE: int = Field(512, description="Chars per chunk")

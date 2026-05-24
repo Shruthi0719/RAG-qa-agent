@@ -3,11 +3,12 @@ RAG Pipeline — Core retrieval-augmented generation logic.
 
 Improvements over v1:
   - Incremental indexing (only re-embed changed/new files via SHA-256 manifest)
-  - Extended document support: CSV, HTML, Markdown, EPUB in addition to PDF/TXT/DOCX
+  - Extended document support: CSV, HTML, Markdown in addition to PDF/TXT/DOCX
   - BM25 + FAISS hybrid retrieval via EnsembleRetriever
-  - Cross-encoder reranker for result quality
+  - Query routing — detects off-topic questions before calling LLM
   - Source citations with page numbers in answers
-  - Async-friendly answer_query_async for streaming
+  - Async-friendly answer_query_stream for streaming
+  - HuggingFace Inference API embeddings (no local model — low memory for deployment)
 """
 
 import hashlib
@@ -26,11 +27,9 @@ from langchain_community.document_loaders import (
     Docx2txtLoader,
     PyPDFLoader,
     TextLoader,
-    UnstructuredHTMLLoader,
-    UnstructuredMarkdownLoader,
     CSVLoader,
 )
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
@@ -72,14 +71,24 @@ def _save_manifest(manifest: dict):
 # ─── Document Loading ─────────────────────────────────────────────────────────
 
 LOADER_MAP = {
-    "**/*.pdf": PyPDFLoader,
-    "**/*.txt": TextLoader,
+    "**/*.pdf":  PyPDFLoader,
+    "**/*.txt":  TextLoader,
     "**/*.docx": Docx2txtLoader,
-    "**/*.md": UnstructuredMarkdownLoader,
-    "**/*.html": UnstructuredHTMLLoader,
-    "**/*.htm": UnstructuredHTMLLoader,
-    "**/*.csv": CSVLoader,
+    "**/*.csv":  CSVLoader,
 }
+
+# Try to add Markdown/HTML loaders (require unstructured — optional)
+try:
+    from langchain_community.document_loaders import (
+        UnstructuredHTMLLoader,
+        UnstructuredMarkdownLoader,
+    )
+    LOADER_MAP["**/*.md"]   = UnstructuredMarkdownLoader
+    LOADER_MAP["**/*.html"] = UnstructuredHTMLLoader
+    LOADER_MAP["**/*.htm"]  = UnstructuredHTMLLoader
+    logger.info("Markdown/HTML loaders enabled.")
+except ImportError:
+    logger.warning("unstructured not installed — MD/HTML loading disabled.")
 
 
 def load_documents(data_dir: str = "data/docs") -> list:
@@ -113,10 +122,25 @@ def load_new_documents(data_dir: str = "data/docs") -> Tuple[list, dict]:
     updated_manifest = {}
 
     data_path = Path(data_dir)
-    all_extensions = {".pdf", ".txt", ".docx", ".md", ".html", ".htm", ".csv"}
+    ext_to_loader = {
+        ".pdf":  PyPDFLoader,
+        ".txt":  TextLoader,
+        ".docx": Docx2txtLoader,
+        ".csv":  CSVLoader,
+    }
+    try:
+        from langchain_community.document_loaders import (
+            UnstructuredHTMLLoader,
+            UnstructuredMarkdownLoader,
+        )
+        ext_to_loader[".md"]   = UnstructuredMarkdownLoader
+        ext_to_loader[".html"] = UnstructuredHTMLLoader
+        ext_to_loader[".htm"]  = UnstructuredHTMLLoader
+    except ImportError:
+        pass
 
     for file_path in data_path.rglob("*"):
-        if file_path.suffix.lower() not in all_extensions:
+        if file_path.suffix.lower() not in ext_to_loader:
             continue
         sha = _file_sha256(file_path)
         updated_manifest[str(file_path)] = sha
@@ -124,18 +148,7 @@ def load_new_documents(data_dir: str = "data/docs") -> Tuple[list, dict]:
             logger.debug(f"Skipping unchanged file: {file_path.name}")
             continue
 
-        # Load just this file
-        ext = file_path.suffix.lower()
-        loader_cls = {
-            ".pdf": PyPDFLoader,
-            ".txt": TextLoader,
-            ".docx": Docx2txtLoader,
-            ".md": UnstructuredMarkdownLoader,
-            ".html": UnstructuredHTMLLoader,
-            ".htm": UnstructuredHTMLLoader,
-            ".csv": CSVLoader,
-        }.get(ext)
-
+        loader_cls = ext_to_loader.get(file_path.suffix.lower())
         if loader_cls:
             try:
                 docs = loader_cls(str(file_path)).load()
@@ -150,7 +163,6 @@ def load_new_documents(data_dir: str = "data/docs") -> Tuple[list, dict]:
 # ─── Chunking ─────────────────────────────────────────────────────────────────
 
 def chunk_documents(docs: list) -> list:
-    """Split documents into overlapping chunks for better retrieval."""
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=settings.CHUNK_SIZE,
         chunk_overlap=settings.CHUNK_OVERLAP,
@@ -167,12 +179,16 @@ def chunk_documents(docs: list) -> list:
 
 # ─── Embeddings ───────────────────────────────────────────────────────────────
 
-def get_embeddings() -> HuggingFaceEmbeddings:
-    """Return a local HuggingFace embedding model (no API cost)."""
-    return HuggingFaceEmbeddings(
+def get_embeddings() -> HuggingFaceInferenceAPIEmbeddings:
+    """
+    Use HuggingFace Inference API for embeddings.
+    - No local model download
+    - No heavy RAM usage (~50MB vs ~500MB locally)
+    - Free tier on HuggingFace
+    """
+    return HuggingFaceInferenceAPIEmbeddings(
+        api_key=settings.HF_API_KEY,
         model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
     )
 
 
@@ -182,7 +198,7 @@ def build_index(chunks: list) -> FAISS:
     """Embed chunks and persist FAISS index to disk."""
     INDEX_PATH.mkdir(parents=True, exist_ok=True)
     embeddings = get_embeddings()
-    logger.info("Building FAISS index — this may take a moment...")
+    logger.info("Building FAISS index via HuggingFace Inference API...")
     vectorstore = FAISS.from_documents(chunks, embeddings)
     vectorstore.save_local(str(INDEX_PATH))
     with open(DOCS_PICKLE, "wb") as f:
@@ -207,7 +223,6 @@ def update_index(new_chunks: list, manifest: dict) -> FAISS:
             new_vs = FAISS.from_documents(new_chunks, embeddings)
             vectorstore.merge_from(new_vs)
 
-        # Merge existing + new chunks for BM25 pickle
         with open(DOCS_PICKLE, "rb") as f:
             existing_chunks = pickle.load(f)
         all_chunks = existing_chunks + new_chunks
@@ -241,7 +256,6 @@ def load_index() -> FAISS:
 
 
 def load_chunks() -> list:
-    """Load raw document chunks from pickle (used for BM25)."""
     if not DOCS_PICKLE.exists():
         return []
     with open(DOCS_PICKLE, "rb") as f:
@@ -273,11 +287,11 @@ def build_hybrid_retriever(vectorstore: FAISS, chunks: list):
 
     return EnsembleRetriever(
         retrievers=[bm25_retriever, faiss_retriever],
-        weights=[0.4, 0.6],   # FAISS gets slightly more weight
+        weights=[0.4, 0.6],
     )
 
 
-# ─── QA Chain ─────────────────────────────────────────────────────────────────
+# ─── Prompts ──────────────────────────────────────────────────────────────────
 
 CONDENSE_PROMPT = PromptTemplate.from_template(
     """Given the conversation below and a follow-up question, rephrase the follow-up
@@ -307,14 +321,11 @@ Question: {question}
 Answer:"""
 )
 
-# ─── Query Routing ────────────────────────────────────────────────────────────
-
 ROUTING_PROMPT = PromptTemplate.from_template(
     """You are a query router for a document Q&A system.
 
 Given a user question and some retrieved document excerpts, determine if the question
-can be answered from the provided context, or if it is completely off-topic / unrelated
-to the documents.
+can be answered from the provided context, or if it is completely off-topic.
 
 Respond with ONLY one word:
 - "RELEVANT" if the question could plausibly be answered from the context
@@ -328,37 +339,35 @@ Decision:"""
 )
 
 
-def _build_router_llm():
-    """Build a lightweight LLM call for routing decisions."""
-    return ChatGroq(
-        model=settings.LLM_MODEL,
-        temperature=0.0,
-        groq_api_key=settings.GROQ_API_KEY,
-    )
-
+# ─── Query Routing ────────────────────────────────────────────────────────────
 
 def check_query_relevance(question: str, context_docs: list) -> bool:
     """
-    Returns True if the question appears answerable from the retrieved docs,
-    False if it seems completely off-topic.
-    Uses the first ~800 chars of each doc to keep the routing call fast.
+    Returns True if the question appears answerable from the retrieved docs.
+    Returns False if completely off-topic.
     """
     context_preview = "\n---\n".join(
         doc.page_content[:400] for doc in context_docs[:4]
     )
     if not context_preview.strip():
-        return False  # no docs at all → off-topic
+        return False
 
     try:
-        llm = _build_router_llm()
+        llm = ChatGroq(
+            model=settings.LLM_MODEL,
+            temperature=0.0,
+            groq_api_key=settings.GROQ_API_KEY,
+        )
         prompt_text = ROUTING_PROMPT.format(context=context_preview, question=question)
         result = llm.invoke(prompt_text)
         decision = result.content.strip().upper()
         return "RELEVANT" in decision
     except Exception as e:
         logger.warning(f"Query routing check failed (defaulting to RELEVANT): {e}")
-        return True  # safe default: let the chain try
+        return True
 
+
+# ─── QA Chain ─────────────────────────────────────────────────────────────────
 
 def build_qa_chain(vectorstore: FAISS, chunks: list = None) -> ConversationalRetrievalChain:
     """
@@ -402,12 +411,12 @@ def build_qa_chain(vectorstore: FAISS, chunks: list = None) -> ConversationalRet
 def answer_query(chain: ConversationalRetrievalChain, question: str) -> Tuple[str, List[dict]]:
     """
     Run a question through the chain.
-    Returns (answer_text, list_of_source_dicts with file + page info).
-    Includes query routing to detect off-topic questions before calling the LLM.
+    Returns (answer_text, sources_list).
+    Includes query routing to detect off-topic questions.
     """
-    # ── Query routing: check if question is relevant to indexed docs ──────────
+    # Query routing
     try:
-        vectorstore = chain.retriever.retrievers[1].vectorstore  # FAISS inside ensemble
+        vectorstore = chain.retriever.retrievers[1].vectorstore
     except (AttributeError, IndexError):
         try:
             vectorstore = chain.retriever.vectorstore
@@ -423,11 +432,9 @@ def answer_query(chain: ConversationalRetrievalChain, question: str) -> Tuple[st
                 [],
             )
 
-    # ── Normal chain execution ────────────────────────────────────────────────
     result = chain.invoke({"question": question})
     answer = result["answer"]
 
-    # Deduplicate sources while preserving page info
     seen = set()
     sources = []
     for doc in result.get("source_documents", []):
@@ -451,10 +458,8 @@ async def answer_query_stream(
 ) -> AsyncGenerator[str, None]:
     """
     Stream answer tokens via LangChain's astream_events.
-    Yields text chunks as they arrive.
-    Includes query routing — yields an off-topic message instead of streaming if irrelevant.
+    Includes query routing check before streaming.
     """
-    # ── Query routing check ───────────────────────────────────────────────────
     try:
         vectorstore = chain.retriever.retrievers[1].vectorstore
     except (AttributeError, IndexError):
@@ -472,7 +477,6 @@ async def answer_query_stream(
             )
             return
 
-    # ── Normal streaming ──────────────────────────────────────────────────────
     async for event in chain.astream_events(
         {"question": question},
         version="v1",
