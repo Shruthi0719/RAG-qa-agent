@@ -42,11 +42,12 @@
       align-items: center;
       justify-content: center;
       z-index: 99999;
-      transition: opacity 0.6s ease;
+      transition: opacity 0.5s ease;
     }
     #app-loader.hidden {
       opacity: 0;
       pointer-events: none;
+      visibility: hidden;
     }
     .loader-content {
       display: flex;
@@ -119,6 +120,53 @@
       0%, 80%, 100% { transform: translateY(0);    opacity: 0.5; }
       40%            { transform: translateY(-6px); opacity: 1;   }
     }
+
+    /* ── Indexed document list ── */
+    .doc-list { display: flex; flex-direction: column; gap: 4px; }
+    .doc-item {
+      display: flex; align-items: center; gap: 6px;
+      padding: 7px 10px;
+      background: var(--surface2);
+      border-radius: 8px;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      border: 1px solid transparent;
+      transition: border-color 0.15s;
+    }
+    .doc-item:hover { border-color: var(--border); }
+    .doc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .doc-badge {
+      font-size: 0.65rem; padding: 1px 6px;
+      border-radius: 10px; flex-shrink: 0;
+    }
+    .doc-badge.indexed { background: #1a3a2a; color: var(--success); }
+    .doc-badge.pending { background: #3a2a10; color: var(--warning); }
+    .doc-size { font-size: 0.68rem; color: var(--text-muted); flex-shrink: 0; }
+    .doc-del {
+      background: none; border: none; color: var(--error);
+      cursor: pointer; font-size: 0.9rem; padding: 0 2px;
+      flex-shrink: 0; opacity: 0.55; transition: opacity 0.15s;
+    }
+    .doc-del:hover { opacity: 1; }
+    .empty-docs { text-align: center; color: var(--text-muted); font-size: 0.78rem; padding: 8px 0; }
+
+    /* ── Confirm dialog ── */
+    #confirm-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6); z-index: 1000;
+      align-items: center; justify-content: center;
+    }
+    #confirm-overlay.show { display: flex; }
+    #confirm-box {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 24px;
+      max-width: 320px; width: 90%;
+      display: flex; flex-direction: column; gap: 16px;
+    }
+    #confirm-box h3 { font-size: 1rem; }
+    #confirm-box p { font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; }
+    #confirm-box .confirm-btns { display: flex; gap: 8px; }
+    #confirm-box .confirm-btns .btn { flex: 1; }
 
     /* ── Sidebar ── */
     #sidebar {
@@ -454,6 +502,18 @@
 </div>
 
 <!-- Sidebar -->
+<!-- Confirm dialog -->
+<div id="confirm-overlay">
+  <div id="confirm-box">
+    <h3 id="confirm-title">Confirm</h3>
+    <p id="confirm-msg"></p>
+    <div class="confirm-btns">
+      <button class="btn btn-secondary" onclick="confirmResolve(false)">Cancel</button>
+      <button class="btn btn-danger" onclick="confirmResolve(true)">Delete</button>
+    </div>
+  </div>
+</div>
+
 <aside id="sidebar">
   <div class="logo">
     <span class="logo-icon">🔍</span> RAG Q&A Agent
@@ -484,6 +544,17 @@
     <button class="btn btn-secondary" onclick="doIngest(true)">🔄 Full Rebuild</button>
     <div class="progress-bar-wrap" id="ingest-progress" style="display:none">
       <div class="progress-bar"></div>
+    </div>
+  </div>
+
+  <!-- Indexed Documents -->
+  <div class="sidebar-section">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <span class="sidebar-label">Indexed Documents</span>
+      <button class="btn btn-secondary" style="padding:3px 8px;font-size:0.7rem" onclick="loadDocuments()" title="Refresh">↻</button>
+    </div>
+    <div class="doc-list" id="doc-list">
+      <div class="empty-docs">No documents yet</div>
     </div>
   </div>
 
@@ -558,9 +629,19 @@ const loaderInterval = setInterval(cycleLoaderMsg, 1800);
 function hideLoader() {
   clearInterval(loaderInterval);
   const loader = document.getElementById('app-loader');
+  if (!loader) return;
   loader.classList.add('hidden');
-  setTimeout(() => loader.remove(), 700);
+  // Remove from DOM after transition; use both transitionend and a fallback timeout
+  const cleanup = () => { if (loader.parentNode) loader.parentNode.removeChild(loader); };
+  loader.addEventListener('transitionend', cleanup, { once: true });
+  setTimeout(cleanup, 800); // fallback in case transitionend doesn't fire
 }
+
+// Safety net: force-hide after 8s no matter what (handles Render cold starts)
+setTimeout(() => {
+  const loader = document.getElementById('app-loader');
+  if (loader) { loader.style.display = 'none'; }
+}, 8000);
 
 // ── Startup ──────────────────────────────────────────────────────────────────
 (async function init() {
@@ -568,30 +649,100 @@ function hideLoader() {
 
   // Poll /health until server is up, then hide loader
   let attempts = 0;
-  const maxAttempts = 30;
+  const maxAttempts = 40; // 40 × 1500ms = 60s max wait
 
   async function waitForServer() {
     try {
-      const r = await fetch(`${API}/health`);
+      const r = await fetch(`${API}/health`, { cache: 'no-store' });
       if (r.ok) {
         document.getElementById('loader-status').textContent = 'Ready!';
         await loadStats();
-        setTimeout(hideLoader, 600);
+        await loadDocuments();
+        setTimeout(hideLoader, 400);
         setInterval(loadStats, 10000);
+        setInterval(loadDocuments, 15000);
         return;
       }
     } catch {}
     attempts++;
     if (attempts < maxAttempts) {
+      document.getElementById('loader-status').textContent =
+        attempts < 10 ? 'Connecting…' : 'Almost there…';
       setTimeout(waitForServer, 1500);
     } else {
-      document.getElementById('loader-status').textContent = 'Taking longer than usual…';
-      setTimeout(hideLoader, 2000);
+      document.getElementById('loader-status').textContent = 'Server not responding.';
+      setTimeout(hideLoader, 1500);
     }
   }
 
   await waitForServer();
 })();
+
+// ── Confirm dialog ────────────────────────────────────────────────────────────
+let _confirmResolve = null;
+function showConfirm(title, msg) {
+  document.getElementById('confirm-title').textContent = title;
+  document.getElementById('confirm-msg').textContent = msg;
+  document.getElementById('confirm-overlay').classList.add('show');
+  return new Promise(res => { _confirmResolve = res; });
+}
+function confirmResolve(val) {
+  document.getElementById('confirm-overlay').classList.remove('show');
+  if (_confirmResolve) { _confirmResolve(val); _confirmResolve = null; }
+}
+
+// ── Document list ─────────────────────────────────────────────────────────────
+async function loadDocuments() {
+  try {
+    const r = await fetch(`${API}/documents`);
+    if (!r.ok) return;
+    const { files } = await r.json();
+    renderDocList(files);
+  } catch {}
+}
+
+function formatBytes(b) {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b/1024).toFixed(1)} KB`;
+  return `${(b/(1024*1024)).toFixed(1)} MB`;
+}
+
+function renderDocList(files) {
+  const list = document.getElementById('doc-list');
+  if (!files || !files.length) {
+    list.innerHTML = '<div class="empty-docs">No documents yet</div>';
+    return;
+  }
+  list.innerHTML = '';
+  files.forEach(f => {
+    const el = document.createElement('div');
+    el.className = 'doc-item';
+    const badge = f.indexed
+      ? '<span class="doc-badge indexed">indexed</span>'
+      : '<span class="doc-badge pending">pending</span>';
+    el.innerHTML = `
+      <span class="doc-name" title="${f.filename}">📄 ${f.filename}</span>
+      ${badge}
+      <span class="doc-size">${formatBytes(f.size_bytes)}</span>
+      <button class="doc-del" title="Delete ${f.filename}" onclick="deleteDocument('${f.filename}')">🗑</button>`;
+    list.appendChild(el);
+  });
+}
+
+async function deleteDocument(filename) {
+  const ok = await showConfirm('Delete document', `Delete "${filename}" and rebuild the index?`);
+  if (!ok) return;
+  toast(`Deleting ${filename}…`, 'info');
+  try {
+    const r = await fetch(`${API}/document/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Delete failed');
+    toast(`Deleted "${filename}"`, 'success');
+    await Promise.all([loadStats(), loadDocuments()]);
+  } catch (e) {
+    toast(`Error: ${e.message}`, 'error');
+  }
+}
 
 async function loadStats() {
   try {
