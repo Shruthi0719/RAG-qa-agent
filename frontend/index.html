@@ -854,7 +854,7 @@ function setFileStatus(index, status, label) {
   }
 }
 
-// ── Upload + auto-ingest ───────────────────────────────────────────────────────
+// ── Upload + background ingest ────────────────────────────────────────────────
 let _uploadInProgress = false;
 
 async function uploadAndIngest() {
@@ -866,9 +866,7 @@ async function uploadAndIngest() {
   btn.disabled = true;
   prog.style.display = 'block';
 
-  // Upload each file with per-file status
   const toUpload = [...pendingFiles];
-  let anyUploaded = false;
 
   for (let i = 0; i < toUpload.length; i++) {
     const f = toUpload[i];
@@ -878,26 +876,25 @@ async function uploadAndIngest() {
     try {
       const fd = new FormData();
       fd.append('file', f);
-      const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
-      const d = await r.json().catch(() => ({ detail: 'Bad response' }));
 
-      if (r.ok) {
+      // Upload returns instantly — ingest runs in background on server
+      const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
+      const d = await r.json().catch(() => null);
+
+      if (r.ok && d) {
         setFileStatus(listIdx, 'done', f.name);
-        anyUploaded = true;
-        // Remove from pending after short delay so user sees ✅
+        toast(`✅ "${f.name}" uploaded — indexing in background…`, 'success');
+
+        // Remove from pending after short delay
         setTimeout(() => {
           const idx = pendingFiles.indexOf(f);
           if (idx > -1) { pendingFiles.splice(idx, 1); renderFileList(); }
         }, 1500);
 
-        // If backend auto-ingested, show success immediately
-        if (d.auto_ingested) {
-          toast(`✅ "${f.name}" uploaded & indexed (${d.num_chunks} chunks)`, 'success');
-          await Promise.all([loadStats(), loadDocuments()]);
-        }
       } else {
         setFileStatus(listIdx, 'error', f.name);
-        toast(`Upload failed: ${d.detail || 'Unknown error'}`, 'error');
+        const msg = d?.detail || `HTTP ${r.status}`;
+        toast(`Upload failed: ${msg}`, 'error');
       }
     } catch (e) {
       setFileStatus(listIdx, 'error', f.name);
@@ -905,14 +902,44 @@ async function uploadAndIngest() {
     }
   }
 
-  // If auto-ingest didn't run (or any files failed), offer manual ingest
-  if (anyUploaded) {
-    await Promise.all([loadStats(), loadDocuments()]);
-  }
+  // Poll stats until chunk count increases (background ingest completes)
+  pollForIngestCompletion();
 
   btn.disabled = false;
   prog.style.display = 'none';
   _uploadInProgress = false;
+}
+
+async function pollForIngestCompletion() {
+  const startChunks = parseInt(document.getElementById('stat-chunks').textContent) || 0;
+  let attempts = 0;
+  const maxAttempts = 40; // 40 × 3s = 2 min max
+
+  const poll = async () => {
+    try {
+      const r = await fetch(`${API}/stats`);
+      if (r.ok) {
+        const d = await r.json();
+        document.getElementById('stat-chunks').textContent = d.num_chunks.toLocaleString();
+        document.getElementById('stat-files').textContent = d.num_files;
+        document.getElementById('index-dot').className = 'dot ' + (d.index_ready ? 'green' : 'red');
+        document.getElementById('index-status').textContent = d.index_ready ? 'Index ready' : 'Indexing…';
+
+        if (d.num_chunks > startChunks || d.index_ready) {
+          await loadDocuments();
+          toast('✅ Indexing complete — ready to chat!', 'success');
+          return; // done
+        }
+      }
+    } catch {}
+
+    attempts++;
+    if (attempts < maxAttempts) {
+      setTimeout(poll, 3000);
+    }
+  };
+
+  setTimeout(poll, 3000); // first check after 3s
 }
 
 // ── Manual ingest (for explicit button clicks) ────────────────────────────────

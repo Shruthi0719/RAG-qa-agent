@@ -307,14 +307,30 @@ async def ingest_full():
     }
 
 
-@app.post("/upload", tags=["Indexing"])
-async def upload_file(file: UploadFile = File(...)):
-    """
-    Upload a document (PDF, TXT, DOCX, MD, HTML, CSV) to the docs directory,
-    then automatically trigger incremental ingest so it's queryable immediately.
-    """
-    global _vectorstore, _chunks_cache
+import asyncio
+from fastapi import BackgroundTasks
 
+async def _background_ingest(docs_dir: str):
+    """Run ingest in background so upload returns instantly."""
+    global _vectorstore, _chunks_cache
+    try:
+        new_docs, updated_manifest = load_new_documents(docs_dir)
+        if new_docs:
+            chunks = chunk_documents(new_docs)
+            _vectorstore = update_index(chunks, updated_manifest)
+            _chunks_cache = load_chunks()
+            session_store.clear_all()
+            logger.info(f"Background ingest complete: {len(_chunks_cache)} chunks")
+    except Exception as e:
+        logger.error(f"Background ingest failed: {e}")
+
+
+@app.post("/upload", tags=["Indexing"])
+async def upload_file(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
+    """
+    Upload a document. Returns immediately after saving the file,
+    then triggers ingest in the background so the UI never times out.
+    """
     allowed = {".pdf", ".txt", ".docx", ".md", ".html", ".htm", ".csv"}
     ext = Path(file.filename).suffix.lower()
     if ext not in allowed:
@@ -336,28 +352,16 @@ async def upload_file(file: UploadFile = File(...)):
     except OSError as e:
         raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
 
-    # Auto-ingest so the file is immediately queryable
-    try:
-        new_docs, updated_manifest = load_new_documents(str(DOCS_DIR))
-        if new_docs:
-            chunks = chunk_documents(new_docs)
-            _vectorstore = update_index(chunks, updated_manifest)
-            _chunks_cache = load_chunks()
-            session_store.clear_all()
-            return {
-                "message": f"Uploaded and indexed '{file.filename}'.",
-                "num_chunks": len(_chunks_cache),
-                "auto_ingested": True,
-            }
-    except Exception as e:
-        logger.warning(f"Auto-ingest after upload failed: {e}")
-        # File was saved — return success, user can manually ingest
-        return {
-            "message": f"Uploaded '{file.filename}'. Auto-ingest failed: {e}. Click Ingest to index.",
-            "auto_ingested": False,
-        }
+    # Kick off ingest in the background — upload returns immediately
+    if background_tasks:
+        background_tasks.add_task(_background_ingest, str(DOCS_DIR))
 
-    return {"message": f"Uploaded '{file.filename}'. Call /ingest to update index.", "auto_ingested": False}
+    return {
+        "message": f"Uploaded '{file.filename}'. Indexing in background…",
+        "filename": file.filename,
+        "auto_ingested": False,
+        "indexing": True,
+    }
 
 
 @app.get("/documents", tags=["Indexing"])
