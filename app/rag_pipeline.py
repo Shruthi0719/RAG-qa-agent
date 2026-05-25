@@ -132,6 +132,19 @@ def load_documents(data_dir: str = "data/docs") -> list:
     return all_docs
 
 
+def _load_pdf_lazy(file_path: Path) -> list:
+    """Load PDF page by page to avoid loading the entire file into RAM at once."""
+    docs = []
+    try:
+        loader = PyPDFLoader(str(file_path))
+        for page in loader.lazy_load():
+            docs.append(page)
+    except Exception:
+        # fallback to regular load
+        docs = PyPDFLoader(str(file_path)).load()
+    return docs
+
+
 def load_new_documents(data_dir: str = "data/docs") -> Tuple[list, dict]:
     manifest = _load_manifest()
     new_docs = []
@@ -167,9 +180,12 @@ def load_new_documents(data_dir: str = "data/docs") -> Tuple[list, dict]:
         loader_cls = ext_to_loader.get(file_path.suffix.lower())
         if loader_cls:
             try:
-                docs = loader_cls(str(file_path)).load()
+                if file_path.suffix.lower() == ".pdf":
+                    docs = _load_pdf_lazy(file_path)
+                else:
+                    docs = loader_cls(str(file_path)).load()
                 new_docs.extend(docs)
-                logger.info(f"Loaded new/changed file: {file_path.name} ({len(docs)} docs)")
+                logger.info(f"Loaded: {file_path.name} ({len(docs)} pages/docs)")
             except Exception as e:
                 logger.warning(f"Failed to load {file_path.name}: {e}")
 
@@ -195,45 +211,71 @@ def chunk_documents(docs: list) -> list:
 
 # ─── Index Build / Load ───────────────────────────────────────────────────────
 
+EMBED_BATCH_SIZE = 32  # embed this many chunks at a time to stay within 512MB RAM
+
+
+def _build_faiss_batched(chunks: list, embeddings) -> FAISS:
+    """
+    Build a FAISS index by embedding chunks in small batches.
+    Prevents OOM on Render free tier (512MB) for large PDFs.
+    """
+    if not chunks:
+        raise ValueError("No chunks to embed.")
+
+    logger.info(f"Embedding {len(chunks)} chunks in batches of {EMBED_BATCH_SIZE}…")
+    vectorstore = None
+
+    for i in range(0, len(chunks), EMBED_BATCH_SIZE):
+        batch = chunks[i: i + EMBED_BATCH_SIZE]
+        logger.info(f"  Batch {i // EMBED_BATCH_SIZE + 1}/{-(-len(chunks) // EMBED_BATCH_SIZE)}: {len(batch)} chunks")
+        if vectorstore is None:
+            vectorstore = FAISS.from_documents(batch, embeddings)
+        else:
+            batch_vs = FAISS.from_documents(batch, embeddings)
+            vectorstore.merge_from(batch_vs)
+
+    return vectorstore
+
+
 def build_index(chunks: list) -> FAISS:
     INDEX_PATH.mkdir(parents=True, exist_ok=True)
-    embeddings = get_embeddings()   # raises RuntimeError with clear message if misconfigured
-    logger.info("Building FAISS index via HuggingFace Inference API...")
-    vectorstore = FAISS.from_documents(chunks, embeddings)
+    embeddings = get_embeddings()
+    logger.info("Building FAISS index (batched)…")
+    vectorstore = _build_faiss_batched(chunks, embeddings)
     vectorstore.save_local(str(INDEX_PATH))
     with open(DOCS_PICKLE, "wb") as f:
         pickle.dump(chunks, f)
-    logger.info(f"Index saved to {INDEX_PATH}")
+    logger.info(f"Index saved — {len(chunks)} chunks")
     return vectorstore
 
 
 def update_index(new_chunks: list, manifest: dict) -> FAISS:
-    embeddings = get_embeddings()   # raises RuntimeError with clear message if misconfigured
+    embeddings = get_embeddings()
 
     if INDEX_PATH.exists() and DOCS_PICKLE.exists():
-        logger.info("Merging new chunks into existing index...")
+        logger.info("Merging new chunks into existing index (batched)…")
         vectorstore = FAISS.load_local(
             str(INDEX_PATH), embeddings, allow_dangerous_deserialization=True
         )
         if new_chunks:
-            new_vs = FAISS.from_documents(new_chunks, embeddings)
+            new_vs = _build_faiss_batched(new_chunks, embeddings)
             vectorstore.merge_from(new_vs)
 
         with open(DOCS_PICKLE, "rb") as f:
             existing_chunks = pickle.load(f)
         all_chunks = existing_chunks + new_chunks
     else:
-        logger.info("No existing index found — building from scratch...")
+        logger.info("No existing index — building from scratch (batched)…")
         if not new_chunks:
             raise ValueError("No documents to index. Upload files first.")
-        vectorstore = FAISS.from_documents(new_chunks, embeddings)
+        vectorstore = _build_faiss_batched(new_chunks, embeddings)
         all_chunks = new_chunks
 
     vectorstore.save_local(str(INDEX_PATH))
     with open(DOCS_PICKLE, "wb") as f:
         pickle.dump(all_chunks, f)
     _save_manifest(manifest)
-    logger.info(f"Index updated. Total chunks: {len(all_chunks)}")
+    logger.info(f"Index updated — {len(all_chunks)} total chunks")
     return vectorstore
 
 
