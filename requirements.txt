@@ -8,8 +8,9 @@ langchain==0.2.1
 langchain-community==0.2.1
 langchain-groq==0.1.6
 
-# Local embeddings — no API calls, works on Render free tier
-sentence-transformers==2.7.0
+# Embeddings — FastEmbed uses ONNX (no PyTorch), ~50MB RAM vs 400MB for sentence-transformers
+# Perfect for Render free tier 512MB limit
+fastembed==0.2.7
 
 # Vector store
 faiss-cpu

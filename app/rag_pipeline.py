@@ -30,7 +30,7 @@ from app.logger import get_logger
 logger = get_logger(__name__)
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"  # Used by FastEmbed — 33MB ONNX model
 import os as _os
 
 def _writable(rel: str) -> Path:
@@ -55,16 +55,17 @@ MANIFEST_PATH = _writable(_os.environ.get("MANIFEST_PATH",     "data/file_manife
 
 def get_embeddings():
     """
-    Local sentence-transformers embeddings — runs entirely inside the container,
-    no outbound API calls, no HF token needed. Works on Render free tier.
-    Model (~90MB) is downloaded once on first ingest and cached.
+    FastEmbed embeddings — ultra-lightweight (~50MB RAM), no PyTorch needed.
+    Uses ONNX runtime under the hood, perfect for Render free tier (512MB limit).
+    Model: BAAI/bge-small-en-v1.5 — 33MB, 384 dims, strong quality.
     """
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    return HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    try:
+        from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
+    except ImportError:
+        raise RuntimeError(
+            "fastembed not installed. Run: pip install fastembed"
+        )
+    return FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
 
 
