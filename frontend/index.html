@@ -121,6 +121,26 @@
       40%            { transform: translateY(-6px); opacity: 1;   }
     }
 
+    /* ── Pending file items ── */
+    .file-item {
+      display: flex; align-items: center; gap: 6px;
+      padding: 6px 10px;
+      background: var(--surface2);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-top: 4px;
+    }
+    .file-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+    .file-item .del-btn {
+      background: none; border: none; color: var(--text-muted);
+      cursor: pointer; font-size: 0.85rem; flex-shrink: 0;
+    }
+    .file-item.uploading { border-color: var(--accent); color: var(--text); }
+    .file-item.done      { border-color: var(--success); color: var(--success); }
+    .file-item.error     { border-color: var(--error);   color: var(--error); }
+
     /* ── Indexed document list ── */
     .doc-list { display: flex; flex-direction: column; gap: 4px; }
     .doc-item {
@@ -528,14 +548,14 @@
 
   <!-- Upload -->
   <div class="sidebar-section">
-    <span class="sidebar-label">Documents</span>
+    <span class="sidebar-label">Add Documents</span>
     <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
       <div class="upload-icon">📄</div>
-      Drop files or click to upload<br>
+      <span id="upload-area-text">Drop files or click to upload</span><br>
       <small>PDF · TXT · DOCX · MD · HTML · CSV</small>
     </div>
     <input type="file" id="file-input" multiple accept=".pdf,.txt,.docx,.md,.html,.htm,.csv" />
-    <div class="file-list" id="file-list"></div>
+    <div id="file-list"></div>
   </div>
 
   <!-- Ingest -->
@@ -778,7 +798,7 @@ async function newSession() {
 
 // ── Upload ────────────────────────────────────────────────────────────────────
 const uploadArea = document.getElementById('upload-area');
-const fileInput = document.getElementById('file-input');
+const fileInput  = document.getElementById('file-input');
 const pendingFiles = [];
 
 uploadArea.addEventListener('dragover', e => { e.preventDefault(); uploadArea.classList.add('drag'); });
@@ -788,13 +808,20 @@ uploadArea.addEventListener('drop', e => {
   uploadArea.classList.remove('drag');
   handleFiles([...e.dataTransfer.files]);
 });
-fileInput.addEventListener('change', () => handleFiles([...fileInput.files]));
+fileInput.addEventListener('change', () => {
+  handleFiles([...fileInput.files]);
+  fileInput.value = ''; // reset so same file can be re-added
+});
 
 function handleFiles(files) {
   files.forEach(f => {
-    if (!pendingFiles.find(x => x.name === f.name)) pendingFiles.push(f);
+    if (!pendingFiles.find(x => x.name === f.name)) {
+      pendingFiles.push(f);
+    }
   });
   renderFileList();
+  // Auto-upload immediately when files are chosen
+  uploadAndIngest();
 }
 
 function renderFileList() {
@@ -803,8 +830,9 @@ function renderFileList() {
   pendingFiles.forEach((f, i) => {
     const el = document.createElement('div');
     el.className = 'file-item';
-    el.innerHTML = `<span title="${f.name}">📄 ${f.name}</span>
-      <button class="del-btn" onclick="removeFile(${i})">✕</button>`;
+    el.id = `file-item-${i}`;
+    el.innerHTML = `<span title="${f.name}">📎 ${f.name}</span>
+      <button class="del-btn" onclick="removeFile(${i})" title="Remove">✕</button>`;
     list.appendChild(el);
   });
 }
@@ -814,45 +842,99 @@ function removeFile(i) {
   renderFileList();
 }
 
-async function uploadPendingFiles() {
-  if (!pendingFiles.length) return 0;
-  let uploaded = 0;
-  for (const f of [...pendingFiles]) {
-    const fd = new FormData();
-    fd.append('file', f);
-    const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
-    if (r.ok) {
-      uploaded++;
-      pendingFiles.splice(pendingFiles.indexOf(f), 1);
-    } else {
-      const err = await r.json().catch(() => ({ detail: 'Upload failed' }));
-      toast(`Upload failed: ${err.detail}`, 'error');
-    }
+function setFileStatus(index, status, label) {
+  const el = document.getElementById(`file-item-${index}`);
+  if (!el) return;
+  el.className = `file-item ${status}`;
+  const icon = status === 'uploading' ? '⏳' : status === 'done' ? '✅' : '❌';
+  el.querySelector('span').textContent = `${icon} ${label}`;
+  if (status !== 'uploading') {
+    const btn = el.querySelector('button');
+    if (btn) btn.remove();
   }
-  renderFileList();
-  return uploaded;
 }
 
-// ── Ingest ────────────────────────────────────────────────────────────────────
-async function doIngest(full = false) {
-  const btn = document.getElementById('ingest-btn');
+// ── Upload + auto-ingest ───────────────────────────────────────────────────────
+let _uploadInProgress = false;
+
+async function uploadAndIngest() {
+  if (_uploadInProgress || !pendingFiles.length) return;
+  _uploadInProgress = true;
+
+  const btn  = document.getElementById('ingest-btn');
   const prog = document.getElementById('ingest-progress');
-
-  if (pendingFiles.length) {
-    toast(`Uploading ${pendingFiles.length} file(s)…`, 'info');
-    const n = await uploadPendingFiles();
-    if (n > 0) toast(`Uploaded ${n} file(s).`, 'success');
-  }
-
   btn.disabled = true;
   prog.style.display = 'block';
+
+  // Upload each file with per-file status
+  const toUpload = [...pendingFiles];
+  let anyUploaded = false;
+
+  for (let i = 0; i < toUpload.length; i++) {
+    const f = toUpload[i];
+    const listIdx = pendingFiles.indexOf(f);
+    setFileStatus(listIdx, 'uploading', f.name);
+
+    try {
+      const fd = new FormData();
+      fd.append('file', f);
+      const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
+      const d = await r.json().catch(() => ({ detail: 'Bad response' }));
+
+      if (r.ok) {
+        setFileStatus(listIdx, 'done', f.name);
+        anyUploaded = true;
+        // Remove from pending after short delay so user sees ✅
+        setTimeout(() => {
+          const idx = pendingFiles.indexOf(f);
+          if (idx > -1) { pendingFiles.splice(idx, 1); renderFileList(); }
+        }, 1500);
+
+        // If backend auto-ingested, show success immediately
+        if (d.auto_ingested) {
+          toast(`✅ "${f.name}" uploaded & indexed (${d.num_chunks} chunks)`, 'success');
+          await Promise.all([loadStats(), loadDocuments()]);
+        }
+      } else {
+        setFileStatus(listIdx, 'error', f.name);
+        toast(`Upload failed: ${d.detail || 'Unknown error'}`, 'error');
+      }
+    } catch (e) {
+      setFileStatus(listIdx, 'error', f.name);
+      toast(`Upload error: ${e.message}`, 'error');
+    }
+  }
+
+  // If auto-ingest didn't run (or any files failed), offer manual ingest
+  if (anyUploaded) {
+    await Promise.all([loadStats(), loadDocuments()]);
+  }
+
+  btn.disabled = false;
+  prog.style.display = 'none';
+  _uploadInProgress = false;
+}
+
+// ── Manual ingest (for explicit button clicks) ────────────────────────────────
+async function doIngest(full = false) {
+  // If there are pending files, upload them first
+  if (pendingFiles.length) {
+    await uploadAndIngest();
+    return;
+  }
+
+  const btn  = document.getElementById('ingest-btn');
+  const prog = document.getElementById('ingest-progress');
+  btn.disabled = true;
+  prog.style.display = 'block';
+
   const endpoint = full ? '/ingest/full' : '/ingest';
   try {
     const r = await fetch(`${API}${endpoint}`, { method: 'POST' });
-    const d = await r.json();
+    const d = await r.json().catch(() => ({ detail: 'Bad response' }));
     if (!r.ok) throw new Error(d.detail || 'Ingest failed');
-    toast(`${d.message} (${d.num_chunks} chunks)`, 'success');
-    await loadStats();
+    toast(`✅ ${d.message} (${d.num_chunks} chunks)`, 'success');
+    await Promise.all([loadStats(), loadDocuments()]);
   } catch (e) {
     toast(`Ingest error: ${e.message}`, 'error');
   } finally {
