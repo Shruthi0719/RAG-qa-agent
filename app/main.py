@@ -25,6 +25,9 @@ from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+
 from app.config import settings
 from app.logger import get_logger
 from app.session_manager import session_store
@@ -45,6 +48,28 @@ from app.rag_pipeline import (
 )
 
 logger = get_logger(__name__)
+
+
+# ─── Global exception handlers (ensure JSON responses, never HTML) ────────────
+
+# This is the main fix for Problem 3: HuggingFace/embedding errors were bubbling
+# up as HTML 500 pages. Now they return proper JSON with a clear message.
+
+async def _runtime_error_handler(request, exc: RuntimeError):
+    logger.error(f"RuntimeError: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+    )
+
+
+async def _generic_exception_handler(request, exc: Exception):
+    logger.error(f"Unhandled exception: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {str(exc)}"},
+    )
+
 
 # ─── Shared vectorstore (rebuilt on ingest, read-only during chat) ────────────
 _vectorstore = None
@@ -77,6 +102,14 @@ def get_or_create_chain(session_id: str):
 async def lifespan(app: FastAPI):
     global _vectorstore, _chunks_cache
     logger.info("Starting up RAG Q&A API v2...")
+
+    # Warn early if HF_API_KEY is missing — prevents silent embedding failures
+    if not settings.HF_API_KEY or settings.HF_API_KEY.strip() == "":
+        logger.error(
+            "HF_API_KEY is not set! Embedding will fail. "
+            "Set HF_API_KEY in your environment variables or .env file."
+        )
+
     if INDEX_PATH.exists():
         try:
             _vectorstore = load_index()
@@ -108,6 +141,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register handlers so embedding/config errors return JSON, not HTML 500
+app.add_exception_handler(RuntimeError, _runtime_error_handler)
+app.add_exception_handler(Exception, _generic_exception_handler)
 
 # Serve the frontend UI at /
 @app.get("/", include_in_schema=False)
@@ -224,7 +261,10 @@ async def ingest_incremental():
         raise HTTPException(status_code=422, detail="No readable content found.")
 
     chunks = chunk_documents(new_docs)
-    _vectorstore = update_index(chunks, updated_manifest)
+    try:
+        _vectorstore = update_index(chunks, updated_manifest)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     _chunks_cache = load_chunks()
 
     # Invalidate all sessions so they pick up the new index
@@ -258,7 +298,10 @@ async def ingest_full():
         raise HTTPException(status_code=422, detail="No readable content found.")
 
     chunks = chunk_documents(docs)
-    _vectorstore = build_index(chunks)
+    try:
+        _vectorstore = build_index(chunks)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
     _chunks_cache = chunks
 
     # Save manifest so incremental ingest works from here

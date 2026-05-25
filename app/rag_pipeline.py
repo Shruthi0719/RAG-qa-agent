@@ -1,14 +1,5 @@
 """
 RAG Pipeline — Core retrieval-augmented generation logic.
-
-Improvements over v1:
-  - Incremental indexing (only re-embed changed/new files via SHA-256 manifest)
-  - Extended document support: CSV, HTML, Markdown in addition to PDF/TXT/DOCX
-  - BM25 + FAISS hybrid retrieval via EnsembleRetriever
-  - Query routing — detects off-topic questions before calling LLM
-  - Source citations with page numbers in answers
-  - Async-friendly answer_query_stream for streaming
-  - HuggingFace Inference API embeddings (no local model — low memory for deployment)
 """
 
 import hashlib
@@ -29,7 +20,6 @@ from langchain_community.document_loaders import (
     TextLoader,
     CSVLoader,
 )
-from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
@@ -46,10 +36,46 @@ DOCS_PICKLE = Path("data/docs.pkl")
 MANIFEST_PATH = Path("data/file_manifest.json")
 
 
+# ─── Embeddings (robust wrapper) ─────────────────────────────────────────────
+
+def get_embeddings():
+    """
+    Build embeddings using HuggingFace Inference API.
+    Raises a clear RuntimeError on misconfiguration so the caller
+    (and the API endpoint) can return a proper JSON error instead of
+    an opaque 500 HTML page.
+    """
+    if not settings.HF_API_KEY or settings.HF_API_KEY.strip() == "":
+        raise RuntimeError(
+            "HF_API_KEY is not set. Add your HuggingFace token to the environment variables."
+        )
+
+    # Validate that InferenceClient is available (huggingface-hub >= 0.23.0)
+    try:
+        from huggingface_hub import InferenceClient  # noqa: F401
+    except ImportError:
+        raise RuntimeError(
+            "huggingface-hub>=0.23.0 is required for embeddings. "
+            "Run: pip install 'huggingface-hub>=0.23.0'"
+        )
+
+    try:
+        from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
+    except ImportError:
+        raise RuntimeError(
+            "Could not import HuggingFaceInferenceAPIEmbeddings from langchain-community. "
+            "Ensure langchain-community>=0.2.1 is installed."
+        )
+
+    return HuggingFaceInferenceAPIEmbeddings(
+        api_key=settings.HF_API_KEY,
+        model_name=EMBEDDING_MODEL,
+    )
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _file_sha256(path: Path) -> str:
-    """Return SHA-256 hex digest of a file."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -77,7 +103,6 @@ LOADER_MAP = {
     "**/*.csv":  CSVLoader,
 }
 
-# Try to add Markdown/HTML loaders (require unstructured — optional)
 try:
     from langchain_community.document_loaders import (
         UnstructuredHTMLLoader,
@@ -92,7 +117,6 @@ except ImportError:
 
 
 def load_documents(data_dir: str = "data/docs") -> list:
-    """Load all supported document types from a directory."""
     all_docs = []
     for glob_pattern, loader_cls in LOADER_MAP.items():
         try:
@@ -113,10 +137,6 @@ def load_documents(data_dir: str = "data/docs") -> list:
 
 
 def load_new_documents(data_dir: str = "data/docs") -> Tuple[list, dict]:
-    """
-    Incremental load: only return docs for files that are new or changed
-    since the last ingest. Also returns the updated manifest.
-    """
     manifest = _load_manifest()
     new_docs = []
     updated_manifest = {}
@@ -177,27 +197,11 @@ def chunk_documents(docs: list) -> list:
     return chunks
 
 
-# ─── Embeddings ───────────────────────────────────────────────────────────────
-
-def get_embeddings() -> HuggingFaceInferenceAPIEmbeddings:
-    """
-    Use HuggingFace Inference API for embeddings.
-    - No local model download
-    - No heavy RAM usage (~50MB vs ~500MB locally)
-    - Free tier on HuggingFace
-    """
-    return HuggingFaceInferenceAPIEmbeddings(
-        api_key=settings.HF_API_KEY,
-        model_name=EMBEDDING_MODEL,
-    )
-
-
 # ─── Index Build / Load ───────────────────────────────────────────────────────
 
 def build_index(chunks: list) -> FAISS:
-    """Embed chunks and persist FAISS index to disk."""
     INDEX_PATH.mkdir(parents=True, exist_ok=True)
-    embeddings = get_embeddings()
+    embeddings = get_embeddings()   # raises RuntimeError with clear message if misconfigured
     logger.info("Building FAISS index via HuggingFace Inference API...")
     vectorstore = FAISS.from_documents(chunks, embeddings)
     vectorstore.save_local(str(INDEX_PATH))
@@ -208,11 +212,7 @@ def build_index(chunks: list) -> FAISS:
 
 
 def update_index(new_chunks: list, manifest: dict) -> FAISS:
-    """
-    Incremental update: merge new chunks into the existing FAISS index,
-    or build from scratch if no index exists yet.
-    """
-    embeddings = get_embeddings()
+    embeddings = get_embeddings()   # raises RuntimeError with clear message if misconfigured
 
     if INDEX_PATH.exists() and DOCS_PICKLE.exists():
         logger.info("Merging new chunks into existing index...")
@@ -229,7 +229,7 @@ def update_index(new_chunks: list, manifest: dict) -> FAISS:
     else:
         logger.info("No existing index found — building from scratch...")
         if not new_chunks:
-            raise ValueError("No documents to index.")
+            raise ValueError("No documents to index. Upload files first.")
         vectorstore = FAISS.from_documents(new_chunks, embeddings)
         all_chunks = new_chunks
 
@@ -242,12 +242,11 @@ def update_index(new_chunks: list, manifest: dict) -> FAISS:
 
 
 def load_index() -> FAISS:
-    """Load a persisted FAISS index from disk."""
     if not INDEX_PATH.exists():
         raise FileNotFoundError(
             f"No index found at {INDEX_PATH}. Run /ingest first."
         )
-    embeddings = get_embeddings()
+    embeddings = get_embeddings()   # raises RuntimeError with clear message if misconfigured
     vectorstore = FAISS.load_local(
         str(INDEX_PATH), embeddings, allow_dangerous_deserialization=True
     )
@@ -265,10 +264,6 @@ def load_chunks() -> list:
 # ─── Hybrid Retriever ─────────────────────────────────────────────────────────
 
 def build_hybrid_retriever(vectorstore: FAISS, chunks: list):
-    """
-    Combine FAISS (dense) + BM25 (sparse) retrievers via EnsembleRetriever.
-    Falls back to FAISS-only if chunks list is empty.
-    """
     faiss_retriever = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={
@@ -342,10 +337,6 @@ Decision:"""
 # ─── Query Routing ────────────────────────────────────────────────────────────
 
 def check_query_relevance(question: str, context_docs: list) -> bool:
-    """
-    Returns True if the question appears answerable from the retrieved docs.
-    Returns False if completely off-topic.
-    """
     context_preview = "\n---\n".join(
         doc.page_content[:400] for doc in context_docs[:4]
     )
@@ -370,12 +361,6 @@ def check_query_relevance(question: str, context_docs: list) -> bool:
 # ─── QA Chain ─────────────────────────────────────────────────────────────────
 
 def build_qa_chain(vectorstore: FAISS, chunks: list = None) -> ConversationalRetrievalChain:
-    """
-    Build a ConversationalRetrievalChain with:
-      - hybrid BM25 + FAISS retrieval
-      - sliding window memory
-      - citation-aware prompt
-    """
     llm = ChatGroq(
         model=settings.LLM_MODEL,
         temperature=settings.LLM_TEMPERATURE,
@@ -409,12 +394,6 @@ def build_qa_chain(vectorstore: FAISS, chunks: list = None) -> ConversationalRet
 # ─── Query Execution ──────────────────────────────────────────────────────────
 
 def answer_query(chain: ConversationalRetrievalChain, question: str) -> Tuple[str, List[dict]]:
-    """
-    Run a question through the chain.
-    Returns (answer_text, sources_list).
-    Includes query routing to detect off-topic questions.
-    """
-    # Query routing
     try:
         vectorstore = chain.retriever.retrievers[1].vectorstore
     except (AttributeError, IndexError):
@@ -456,10 +435,6 @@ async def answer_query_stream(
     chain: ConversationalRetrievalChain,
     question: str,
 ) -> AsyncGenerator[str, None]:
-    """
-    Stream answer tokens via LangChain's astream_events.
-    Includes query routing check before streaming.
-    """
     try:
         vectorstore = chain.retriever.retrievers[1].vectorstore
     except (AttributeError, IndexError):

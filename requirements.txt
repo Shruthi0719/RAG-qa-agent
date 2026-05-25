@@ -8,8 +8,8 @@ langchain==0.2.1
 langchain-community==0.2.1
 langchain-groq==0.1.6
 
-# HuggingFace Inference API (replaces local sentence-transformers — saves ~400MB RAM)
-huggingface-hub>=0.20.0
+# HuggingFace — must be >=0.23.0 for InferenceClient (used by HuggingFaceInferenceAPIEmbeddings)
+huggingface-hub>=0.23.0
 
 # Vector store
 faiss-cpu
