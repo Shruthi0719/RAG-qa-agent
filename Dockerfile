@@ -17,7 +17,7 @@ COPY scripts/ ./scripts/
 COPY frontend/ ./frontend/
 
 # Create data directories
-RUN mkdir -p data/docs data/faiss_index
+RUN mkdir -p data/docs data/faiss_index /tmp/rag_docs
 
 EXPOSE 8000
 

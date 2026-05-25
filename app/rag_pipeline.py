@@ -31,9 +31,24 @@ logger = get_logger(__name__)
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-INDEX_PATH = Path("data/faiss_index")
-DOCS_PICKLE = Path("data/docs.pkl")
-MANIFEST_PATH = Path("data/file_manifest.json")
+import os as _os
+
+def _writable(rel: str) -> Path:
+    """Return a writable path, falling back to /tmp if /app/data isn't writable."""
+    for base in [".", "/app", "/tmp"]:
+        p = Path(base) / rel
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            test = p.parent / ".write_test"
+            test.touch(); test.unlink()
+            return p
+        except OSError:
+            continue
+    return Path("/tmp") / rel
+
+INDEX_PATH    = _writable(_os.environ.get("FAISS_INDEX_PATH",  "data/faiss_index"))
+DOCS_PICKLE   = _writable(_os.environ.get("DOCS_PICKLE_PATH",  "data/docs.pkl"))
+MANIFEST_PATH = _writable(_os.environ.get("MANIFEST_PATH",     "data/file_manifest.json"))
 
 
 # ─── Embeddings (robust wrapper) ─────────────────────────────────────────────

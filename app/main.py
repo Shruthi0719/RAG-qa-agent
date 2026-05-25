@@ -13,6 +13,7 @@ New in v2:
 """
 
 import uuid
+import os
 import shutil
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -21,12 +22,10 @@ from typing import Optional, AsyncGenerator
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile, File, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-
-from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.logger import get_logger
@@ -49,27 +48,27 @@ from app.rag_pipeline import (
 
 logger = get_logger(__name__)
 
+# ─── Writable data directory ──────────────────────────────────────────────────
+# On Render (and other read-only container filesystems), /app/data may not be
+# writable. We prefer the env-configured path, then /app/data, then /tmp/data.
+def _resolve_writable_dir(preferred: str) -> Path:
+    for candidate in [preferred, "/app/data/docs", "/tmp/rag_docs"]:
+        p = Path(candidate)
+        try:
+            p.mkdir(parents=True, exist_ok=True)
+            # Quick write test
+            test = p / ".write_test"
+            test.touch()
+            test.unlink()
+            return p
+        except OSError:
+            continue
+    raise RuntimeError("No writable directory found for document storage.")
 
-# ─── Global exception handlers (ensure JSON responses, never HTML) ────────────
+DOCS_DIR: Path = _resolve_writable_dir(os.environ.get("DOCS_DIR", "data/docs"))
+logger_msg = f"Document storage: {DOCS_DIR}"
 
-# This is the main fix for Problem 3: HuggingFace/embedding errors were bubbling
-# up as HTML 500 pages. Now they return proper JSON with a clear message.
-
-async def _runtime_error_handler(request, exc: RuntimeError):
-    logger.error(f"RuntimeError: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": str(exc)},
-    )
-
-
-async def _generic_exception_handler(request, exc: Exception):
-    logger.error(f"Unhandled exception: {exc}", exc_info=True)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": f"Internal server error: {str(exc)}"},
-    )
-
+logger = get_logger(__name__)
 
 # ─── Shared vectorstore (rebuilt on ingest, read-only during chat) ────────────
 _vectorstore = None
@@ -102,14 +101,6 @@ def get_or_create_chain(session_id: str):
 async def lifespan(app: FastAPI):
     global _vectorstore, _chunks_cache
     logger.info("Starting up RAG Q&A API v2...")
-
-    # Warn early if HF_API_KEY is missing — prevents silent embedding failures
-    if not settings.HF_API_KEY or settings.HF_API_KEY.strip() == "":
-        logger.error(
-            "HF_API_KEY is not set! Embedding will fail. "
-            "Set HF_API_KEY in your environment variables or .env file."
-        )
-
     if INDEX_PATH.exists():
         try:
             _vectorstore = load_index()
@@ -141,10 +132,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Register handlers so embedding/config errors return JSON, not HTML 500
-app.add_exception_handler(RuntimeError, _runtime_error_handler)
-app.add_exception_handler(Exception, _generic_exception_handler)
 
 # Serve the frontend UI at /
 @app.get("/", include_in_schema=False)
@@ -240,7 +227,7 @@ async def ingest_incremental():
     """
     global _vectorstore, _chunks_cache
 
-    docs_dir = "data/docs"
+    docs_dir = str(DOCS_DIR)
     if not Path(docs_dir).exists() or not any(Path(docs_dir).rglob("*.*")):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -261,10 +248,7 @@ async def ingest_incremental():
         raise HTTPException(status_code=422, detail="No readable content found.")
 
     chunks = chunk_documents(new_docs)
-    try:
-        _vectorstore = update_index(chunks, updated_manifest)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    _vectorstore = update_index(chunks, updated_manifest)
     _chunks_cache = load_chunks()
 
     # Invalidate all sessions so they pick up the new index
@@ -286,7 +270,7 @@ async def ingest_full():
     """
     global _vectorstore, _chunks_cache
 
-    docs_dir = "data/docs"
+    docs_dir = str(DOCS_DIR)
     if not Path(docs_dir).exists() or not any(Path(docs_dir).rglob("*.*")):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -298,10 +282,7 @@ async def ingest_full():
         raise HTTPException(status_code=422, detail="No readable content found.")
 
     chunks = chunk_documents(docs)
-    try:
-        _vectorstore = build_index(chunks)
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    _vectorstore = build_index(chunks)
     _chunks_cache = chunks
 
     # Save manifest so incremental ingest works from here
@@ -329,9 +310,11 @@ async def ingest_full():
 @app.post("/upload", tags=["Indexing"])
 async def upload_file(file: UploadFile = File(...)):
     """
-    Upload a document (PDF, TXT, DOCX, MD, HTML, CSV) to data/docs/.
-    After uploading, call /ingest to update the index.
+    Upload a document (PDF, TXT, DOCX, MD, HTML, CSV) to the docs directory,
+    then automatically trigger incremental ingest so it's queryable immediately.
     """
+    global _vectorstore, _chunks_cache
+
     allowed = {".pdf", ".txt", ".docx", ".md", ".html", ".htm", ".csv"}
     ext = Path(file.filename).suffix.lower()
     if ext not in allowed:
@@ -340,12 +323,41 @@ async def upload_file(file: UploadFile = File(...)):
             detail=f"Unsupported file type: {ext}. Allowed: {sorted(allowed)}",
         )
 
-    dest = Path("data/docs") / file.filename
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    # Ensure docs dir is writable
+    try:
+        DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Storage unavailable: {e}")
 
-    return {"message": f"Uploaded '{file.filename}'. Call /ingest to update index."}
+    dest = DOCS_DIR / file.filename
+    try:
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not save file: {e}")
+
+    # Auto-ingest so the file is immediately queryable
+    try:
+        new_docs, updated_manifest = load_new_documents(str(DOCS_DIR))
+        if new_docs:
+            chunks = chunk_documents(new_docs)
+            _vectorstore = update_index(chunks, updated_manifest)
+            _chunks_cache = load_chunks()
+            session_store.clear_all()
+            return {
+                "message": f"Uploaded and indexed '{file.filename}'.",
+                "num_chunks": len(_chunks_cache),
+                "auto_ingested": True,
+            }
+    except Exception as e:
+        logger.warning(f"Auto-ingest after upload failed: {e}")
+        # File was saved — return success, user can manually ingest
+        return {
+            "message": f"Uploaded '{file.filename}'. Auto-ingest failed: {e}. Click Ingest to index.",
+            "auto_ingested": False,
+        }
+
+    return {"message": f"Uploaded '{file.filename}'. Call /ingest to update index.", "auto_ingested": False}
 
 
 @app.get("/documents", tags=["Indexing"])
@@ -354,7 +366,7 @@ async def list_documents():
     List all documents currently in data/docs/ with metadata.
     """
     import json
-    docs_dir = Path("data/docs")
+    docs_dir = DOCS_DIR
     if not docs_dir.exists():
         return {"files": []}
 
@@ -385,14 +397,14 @@ async def delete_document(filename: str):
     """
     global _vectorstore, _chunks_cache
 
-    target = Path("data/docs") / filename
+    target = DOCS_DIR / filename
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
     target.unlink()
 
     # Rebuild index without the deleted file
-    docs_dir = "data/docs"
+    docs_dir = str(DOCS_DIR)
     remaining = list(Path(docs_dir).rglob("*.*"))
     if remaining:
         docs = load_documents(docs_dir)
