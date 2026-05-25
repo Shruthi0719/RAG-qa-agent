@@ -8,8 +8,8 @@ langchain==0.2.1
 langchain-community==0.2.1
 langchain-groq==0.1.6
 
-# HuggingFace — must be >=0.23.0 for InferenceClient (used by HuggingFaceInferenceAPIEmbeddings)
-huggingface-hub>=0.23.0
+# Local embeddings — no API calls, works on Render free tier
+sentence-transformers==2.7.0
 
 # Vector store
 faiss-cpu

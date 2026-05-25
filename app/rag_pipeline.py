@@ -55,37 +55,17 @@ MANIFEST_PATH = _writable(_os.environ.get("MANIFEST_PATH",     "data/file_manife
 
 def get_embeddings():
     """
-    Build embeddings using HuggingFace Inference API.
-    Raises a clear RuntimeError on misconfiguration so the caller
-    (and the API endpoint) can return a proper JSON error instead of
-    an opaque 500 HTML page.
+    Local sentence-transformers embeddings — runs entirely inside the container,
+    no outbound API calls, no HF token needed. Works on Render free tier.
+    Model (~90MB) is downloaded once on first ingest and cached.
     """
-    if not settings.HF_API_KEY or settings.HF_API_KEY.strip() == "":
-        raise RuntimeError(
-            "HF_API_KEY is not set. Add your HuggingFace token to the environment variables."
-        )
-
-    # Validate that InferenceClient is available (huggingface-hub >= 0.23.0)
-    try:
-        from huggingface_hub import InferenceClient  # noqa: F401
-    except ImportError:
-        raise RuntimeError(
-            "huggingface-hub>=0.23.0 is required for embeddings. "
-            "Run: pip install 'huggingface-hub>=0.23.0'"
-        )
-
-    try:
-        from langchain_community.embeddings import HuggingFaceInferenceAPIEmbeddings
-    except ImportError:
-        raise RuntimeError(
-            "Could not import HuggingFaceInferenceAPIEmbeddings from langchain-community. "
-            "Ensure langchain-community>=0.2.1 is installed."
-        )
-
-    return HuggingFaceInferenceAPIEmbeddings(
-        api_key=settings.HF_API_KEY,
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
     )
+
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
