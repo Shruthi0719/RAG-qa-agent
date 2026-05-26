@@ -53,19 +53,22 @@ MANIFEST_PATH = _writable(_os.environ.get("MANIFEST_PATH",     "data/file_manife
 
 # ─── Embeddings (robust wrapper) ─────────────────────────────────────────────
 
+_embeddings_cache = None
+
 def get_embeddings():
     """
     FastEmbed embeddings — ultra-lightweight (~50MB RAM), no PyTorch needed.
-    Uses ONNX runtime under the hood, perfect for Render free tier (512MB limit).
-    Model: BAAI/bge-small-en-v1.5 — 33MB, 384 dims, strong quality.
+    Cached after first call so model is only loaded/downloaded once per process.
     """
+    global _embeddings_cache
+    if _embeddings_cache is not None:
+        return _embeddings_cache
     try:
         from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
     except ImportError:
-        raise RuntimeError(
-            "fastembed not installed. Run: pip install fastembed"
-        )
-    return FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+        raise RuntimeError("fastembed not installed. Run: pip install fastembed")
+    _embeddings_cache = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    return _embeddings_cache
 
 
 
