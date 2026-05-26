@@ -168,4 +168,4 @@ See [DEPLOY.md](./DEPLOY.md) for full instructions.
 - **Embeddings** — `sentence-transformers/all-MiniLM-L6-v2` (local, no API cost)
 - **Vector store** — FAISS
 - **Sparse retrieval** — BM25 (rank-bm25)
-- **Frontend** — Vanilla JS, single HTML file, no build step
+- **Frontend** — Vanilla JS, single HTML file, no build step# updated Tue May 26 12:05:16 IST 2026
