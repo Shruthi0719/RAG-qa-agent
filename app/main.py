@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 FastAPI application — RAG Document Q&A API (v2)
 
