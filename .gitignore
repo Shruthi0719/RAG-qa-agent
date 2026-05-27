@@ -3,9 +3,20 @@ __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+
+# FAISS index and cached data
 data/faiss_index/
 data/docs.pkl
 data/file_manifest.json
+
+# Uploaded documents
+data/docs/*.pdf
+data/docs/*.docx
+data/docs/*.csv
+data/docs/*.html
+data/docs/*.htm
+!data/docs/sample_ai_overview.txt
+
 venv/
 .venv/
 *.egg-info/

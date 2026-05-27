@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     LLM_MODEL: str = Field("llama-3.1-8b-instant", description="Groq model to use")
     LLM_TEMPERATURE: float = Field(0.0, ge=0.0, le=1.0)
 
+    # Embeddings — Cohere free API (get key at dashboard.cohere.com)
+    COHERE_API_KEY: str = Field(..., description="Cohere API key for embeddings")
 
     # Chunking
     CHUNK_SIZE: int = Field(512, description="Chars per chunk")

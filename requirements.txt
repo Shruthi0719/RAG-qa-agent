@@ -3,7 +3,7 @@ fastapi==0.111.0
 uvicorn[standard]==0.29.0
 python-multipart==0.0.9
 
-# LangChain — all 0.3.x so langchain-core versions align
+# LangChain stack — all 0.3.x so langchain-core versions align
 langchain==0.3.25
 langchain-community==0.3.24
 langchain-groq==0.3.2
@@ -12,6 +12,9 @@ langchain-text-splitters==0.3.8
 
 # Cohere embeddings (free API, ~10MB RAM vs 300MB for local models)
 cohere>=5.3.0
+
+# Pydantic settings — must be >=2.4.0 for langchain-community 0.3.x
+pydantic-settings>=2.4.0
 
 # Vector store
 faiss-cpu
@@ -22,9 +25,6 @@ rank_bm25==0.2.2
 # Document loaders
 pypdf==4.2.0
 docx2txt==0.8
-
-# Config
-pydantic-settings==2.2.1
 
 # Testing
 pytest==8.2.0
