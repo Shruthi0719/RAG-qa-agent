@@ -494,8 +494,49 @@
       100% { transform: translateX(350%); }
     }
 
+    /* ── Mobile hamburger button ── */
+    #menu-btn {
+      display: none;
+      background: none;
+      border: none;
+      color: var(--text);
+      font-size: 1.3rem;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 8px;
+      line-height: 1;
+    }
+    #menu-btn:hover { background: var(--surface2); }
+
+    /* ── Sidebar overlay (mobile) ── */
+    #sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 99;
+    }
+    #sidebar-overlay.show { display: block; }
+
     @media (max-width: 680px) {
-      #sidebar { display: none; }
+      #menu-btn { display: block; }
+      #sidebar {
+        position: fixed;
+        top: 0; left: 0; bottom: 0;
+        z-index: 100;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        width: 280px;
+        box-shadow: 4px 0 20px rgba(0,0,0,0.4);
+      }
+      #sidebar.open { transform: translateX(0); }
+      .msg { max-width: 100%; }
+      .bubble { font-size: 0.85rem; padding: 10px 12px; max-width: calc(100vw - 70px); }
+      #input-area { padding: 10px 12px; }
+      #question-input { font-size: 16px; }
+      #messages { padding: 16px 12px; }
+      #topbar { padding: 10px 14px; }
+      #topbar h1 { font-size: 0.95rem; }
     }
   </style>
 </head>
@@ -534,6 +575,7 @@
   </div>
 </div>
 
+<div id="sidebar-overlay" onclick="closeSidebar()"></div>
 <aside id="sidebar">
   <div class="logo">
     <span class="logo-icon">🔍</span> RAG Q&A Agent
@@ -600,6 +642,7 @@
 <!-- Main -->
 <main id="main">
   <div id="topbar">
+    <button id="menu-btn" onclick="toggleSidebar()" aria-label="Open menu">☰</button>
     <h1>Document Chat</h1>
     <span class="model-badge" id="model-badge">–</span>
   </div>
@@ -623,6 +666,22 @@
 const API = '';
 let sessionId = localStorage.getItem('rag_session') || null;
 let isStreaming = false;
+
+// ── Mobile sidebar ────────────────────────────────────────────────────────────
+function toggleSidebar() {
+  const s = document.getElementById('sidebar');
+  const o = document.getElementById('sidebar-overlay');
+  const open = s.classList.toggle('open');
+  o.classList.toggle('show', open);
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-overlay').classList.remove('show');
+}
+// Close sidebar when user sends a message on mobile
+function maybeCloseSidebar() {
+  if (window.innerWidth <= 680) closeSidebar();
+}
 
 // ── Loading Screen ────────────────────────────────────────────────────────────
 const loaderMessages = [
@@ -1043,6 +1102,7 @@ async function sendMessage() {
   if (!q || isStreaming) return;
 
   appendMsg('user', q);
+  maybeCloseSidebar();
   inputEl.value = '';
   inputEl.style.height = 'auto';
   isStreaming = true;
