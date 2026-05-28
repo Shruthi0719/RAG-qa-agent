@@ -1,7 +1,8 @@
 """
-RAG Pipeline — Core retrieval-augmented generation logic.
-Uses Cohere's free Embed API for embeddings (no local model = no OOM on Render).
+RAG Pipeline — per-user isolated version.
+All functions accept explicit paths so each user's index is stored separately.
 """
+from __future__ import annotations
 
 import gc
 import hashlib
@@ -17,11 +18,7 @@ from langchain.prompts import PromptTemplate
 from langchain.retrievers import EnsembleRetriever
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import (
-    DirectoryLoader,
-    Docx2txtLoader,
-    PyPDFLoader,
-    TextLoader,
-    CSVLoader,
+    Docx2txtLoader, PyPDFLoader, TextLoader, CSVLoader,
 )
 from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import FAISS
@@ -32,69 +29,58 @@ from app.logger import get_logger
 
 logger = get_logger(__name__)
 
-# ─── Paths (writable fallback chain for Render) ───────────────────────────────
+EMBED_BATCH_SIZE = 48
 
+# ─── Default paths (kept for backward compat) ────────────────────────────────
 def _writable(rel: str) -> Path:
     for base in [".", "/app", "/tmp"]:
         p = Path(base) / rel
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
-            test = p.parent / ".write_test"
-            test.touch(); test.unlink()
+            t = p.parent / ".wt"; t.touch(); t.unlink()
             return p
         except OSError:
             continue
     return Path("/tmp") / rel
 
-INDEX_PATH    = _writable(_os.environ.get("FAISS_INDEX_PATH",  "data/faiss_index"))
-DOCS_PICKLE   = _writable(_os.environ.get("DOCS_PICKLE_PATH",  "data/docs.pkl"))
-MANIFEST_PATH = _writable(_os.environ.get("MANIFEST_PATH",     "data/file_manifest.json"))
-
-EMBED_BATCH_SIZE = 48   # Cohere allows up to 96 per call; 48 is safe
+INDEX_PATH    = _writable("data/faiss_index")
+DOCS_PICKLE   = _writable("data/docs.pkl")
+MANIFEST_PATH = _writable("data/file_manifest.json")
 
 
-# ─── Embeddings (Cohere free API — zero local RAM overhead) ──────────────────
-
+# ─── Embeddings ───────────────────────────────────────────────────────────────
 _embeddings_cache = None
 
 def get_embeddings():
-    """
-    CohereEmbeddings via API — no local model, no ONNX, no PyTorch.
-    RAM cost: ~10MB (just the HTTP client). Works on Render 512MB free tier.
-    Free tier: 1000 calls/min, no credit card required.
-    Requires COHERE_API_KEY env var (get free key at dashboard.cohere.com).
-    """
     global _embeddings_cache
     if _embeddings_cache is not None:
         return _embeddings_cache
-
     cohere_key = _os.environ.get("COHERE_API_KEY", "")
     if not cohere_key:
         raise RuntimeError(
             "COHERE_API_KEY is not set. "
-            "Get a free key at https://dashboard.cohere.com/api-keys "
-            "and add it to your Render environment variables."
+            "Get a free key at https://dashboard.cohere.com/api-keys"
         )
-
-    try:
-        from langchain_cohere import CohereEmbeddings
-    except ImportError:
-        raise RuntimeError(
-            "langchain-cohere not installed. It's in requirements.txt — "
-            "make sure you've pushed and Render has redeployed."
-        )
-
+    from langchain_cohere import CohereEmbeddings
     _embeddings_cache = CohereEmbeddings(
         cohere_api_key=cohere_key,
-        model="embed-english-light-v3.0",   # fastest + lightest free model
+        model="embed-english-light-v3.0",
     )
-    logger.info("Cohere embeddings initialized (embed-english-light-v3.0)")
+    logger.info("Cohere embeddings ready.")
     return _embeddings_cache
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── Manifest helpers ─────────────────────────────────────────────────────────
+def _load_manifest(manifest_path: str = None) -> dict:
+    p = Path(manifest_path) if manifest_path else MANIFEST_PATH
+    return json.loads(p.read_text()) if p.exists() else {}
 
-def _file_sha256(path: Path) -> str:
+def _save_manifest(manifest: dict, manifest_path: str = None):
+    p = Path(manifest_path) if manifest_path else MANIFEST_PATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(manifest, indent=2))
+
+def _sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
@@ -102,234 +88,180 @@ def _file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def _load_manifest() -> dict:
-    if MANIFEST_PATH.exists():
-        return json.loads(MANIFEST_PATH.read_text())
-    return {}
-
-
-def _save_manifest(manifest: dict):
-    MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
-
-
-# ─── Document Loading ─────────────────────────────────────────────────────────
-
-def _load_pdf_lazy(file_path: Path) -> list:
-    """Load PDF page by page to avoid holding full file in RAM."""
+# ─── Document loading ─────────────────────────────────────────────────────────
+def _load_pdf_lazy(path: Path) -> list:
     docs = []
     try:
-        for page in PyPDFLoader(str(file_path)).lazy_load():
+        for page in PyPDFLoader(str(path)).lazy_load():
             docs.append(page)
     except Exception:
-        docs = PyPDFLoader(str(file_path)).load()
+        docs = PyPDFLoader(str(path)).load()
     return docs
 
+EXT_LOADERS = {
+    ".pdf": PyPDFLoader, ".txt": TextLoader,
+    ".docx": Docx2txtLoader, ".csv": CSVLoader,
+}
+try:
+    from langchain_community.document_loaders import UnstructuredHTMLLoader, UnstructuredMarkdownLoader
+    EXT_LOADERS[".md"] = UnstructuredMarkdownLoader
+    EXT_LOADERS[".html"] = UnstructuredHTMLLoader
+    EXT_LOADERS[".htm"] = UnstructuredHTMLLoader
+except ImportError:
+    pass
 
-def load_new_documents(data_dir: str = "data/docs") -> Tuple[list, dict]:
-    manifest = _load_manifest()
-    new_docs = []
-    updated_manifest = {}
 
-    data_path = Path(data_dir)
-    ext_to_loader = {
-        ".pdf":  PyPDFLoader,
-        ".txt":  TextLoader,
-        ".docx": Docx2txtLoader,
-        ".csv":  CSVLoader,
-    }
-    try:
-        from langchain_community.document_loaders import (
-            UnstructuredHTMLLoader,
-            UnstructuredMarkdownLoader,
-        )
-        ext_to_loader[".md"]   = UnstructuredMarkdownLoader
-        ext_to_loader[".html"] = UnstructuredHTMLLoader
-        ext_to_loader[".htm"]  = UnstructuredHTMLLoader
-    except ImportError:
-        pass
+def load_new_documents(data_dir: str, manifest_path: str = None) -> Tuple[list, dict]:
+    manifest = _load_manifest(manifest_path)
+    new_docs, updated_manifest = [], {}
 
-    for file_path in sorted(data_path.rglob("*")):
-        if file_path.suffix.lower() not in ext_to_loader:
+    for fp in sorted(Path(data_dir).rglob("*")):
+        if fp.suffix.lower() not in EXT_LOADERS:
             continue
-        sha = _file_sha256(file_path)
-        updated_manifest[str(file_path)] = sha
-        if manifest.get(str(file_path)) == sha:
-            logger.debug(f"Skipping unchanged: {file_path.name}")
+        sha = _sha256(fp)
+        updated_manifest[str(fp)] = sha
+        if manifest.get(str(fp)) == sha:
             continue
-
         try:
-            if file_path.suffix.lower() == ".pdf":
-                docs = _load_pdf_lazy(file_path)
-            else:
-                docs = ext_to_loader[file_path.suffix.lower()](str(file_path)).load()
+            docs = _load_pdf_lazy(fp) if fp.suffix.lower() == ".pdf" else EXT_LOADERS[fp.suffix.lower()](str(fp)).load()
             new_docs.extend(docs)
-            logger.info(f"Loaded: {file_path.name} ({len(docs)} pages)")
+            logger.info(f"Loaded: {fp.name} ({len(docs)} pages)")
         except Exception as e:
-            logger.warning(f"Failed to load {file_path.name}: {e}")
+            logger.warning(f"Failed: {fp.name}: {e}")
 
     return new_docs, updated_manifest
 
 
-def load_documents(data_dir: str = "data/docs") -> list:
-    docs, _ = load_new_documents(data_dir)
+def load_documents(data_dir: str, manifest_path: str = None) -> list:
+    docs, _ = load_new_documents(data_dir, manifest_path)
     return docs
 
 
 # ─── Chunking ─────────────────────────────────────────────────────────────────
-
 def chunk_documents(docs: list) -> list:
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=settings.CHUNK_SIZE,
         chunk_overlap=settings.CHUNK_OVERLAP,
         separators=["\n\n", "\n", ". ", " ", ""],
-        length_function=len,
     )
     chunks = splitter.split_documents(docs)
-    logger.info(f"Split into {len(chunks)} chunks (size={settings.CHUNK_SIZE})")
+    logger.info(f"Split into {len(chunks)} chunks")
     return chunks
 
 
-# ─── Batched FAISS builder ────────────────────────────────────────────────────
-
+# ─── Batched FAISS ────────────────────────────────────────────────────────────
 def _build_faiss_batched(chunks: list, embeddings) -> FAISS:
-    """
-    Embed chunks in batches to stay within API rate limits and memory.
-    Cohere free tier: 1000 calls/min — batching at 48 keeps us well clear.
-    """
     if not chunks:
         raise ValueError("No chunks to embed.")
-
-    total_batches = -(-len(chunks) // EMBED_BATCH_SIZE)
-    logger.info(f"Embedding {len(chunks)} chunks in {total_batches} batches of {EMBED_BATCH_SIZE}…")
-
-    vectorstore = None
+    vs = None
+    total = -(-len(chunks) // EMBED_BATCH_SIZE)
     for i in range(0, len(chunks), EMBED_BATCH_SIZE):
         batch = chunks[i: i + EMBED_BATCH_SIZE]
-        batch_num = i // EMBED_BATCH_SIZE + 1
-        logger.info(f"  Batch {batch_num}/{total_batches} ({len(batch)} chunks)")
-
-        if vectorstore is None:
-            vectorstore = FAISS.from_documents(batch, embeddings)
+        logger.info(f"  Embedding batch {i//EMBED_BATCH_SIZE+1}/{total} ({len(batch)} chunks)")
+        if vs is None:
+            vs = FAISS.from_documents(batch, embeddings)
         else:
-            vectorstore.merge_from(FAISS.from_documents(batch, embeddings))
-
-        gc.collect()   # free memory between batches
-
-    return vectorstore
-
-
-# ─── Index Build / Load ───────────────────────────────────────────────────────
-
-def build_index(chunks: list) -> FAISS:
-    INDEX_PATH.mkdir(parents=True, exist_ok=True)
-    embeddings = get_embeddings()
-    vectorstore = _build_faiss_batched(chunks, embeddings)
-    vectorstore.save_local(str(INDEX_PATH))
-    with open(DOCS_PICKLE, "wb") as f:
-        pickle.dump(chunks, f)
-    logger.info(f"Index built — {len(chunks)} chunks")
-    return vectorstore
-
-
-def update_index(new_chunks: list, manifest: dict) -> FAISS:
-    embeddings = get_embeddings()
-
-    if INDEX_PATH.exists() and DOCS_PICKLE.exists():
-        logger.info("Merging into existing index…")
-        vectorstore = FAISS.load_local(
-            str(INDEX_PATH), embeddings, allow_dangerous_deserialization=True
-        )
-        if new_chunks:
-            vectorstore.merge_from(_build_faiss_batched(new_chunks, embeddings))
-        with open(DOCS_PICKLE, "rb") as f:
-            existing = pickle.load(f)
-        all_chunks = existing + new_chunks
-    else:
-        logger.info("Building index from scratch…")
-        if not new_chunks:
-            raise ValueError("No documents to index. Upload files first.")
-        vectorstore = _build_faiss_batched(new_chunks, embeddings)
-        all_chunks = new_chunks
-
-    vectorstore.save_local(str(INDEX_PATH))
-    with open(DOCS_PICKLE, "wb") as f:
-        pickle.dump(all_chunks, f)
-    _save_manifest(manifest)
-    logger.info(f"Index updated — {len(all_chunks)} total chunks")
-    return vectorstore
-
-
-def load_index() -> FAISS:
-    if not INDEX_PATH.exists():
-        raise FileNotFoundError("No index found. Run /ingest first.")
-    embeddings = get_embeddings()
-    vs = FAISS.load_local(str(INDEX_PATH), embeddings, allow_dangerous_deserialization=True)
-    logger.info("FAISS index loaded.")
+            vs.merge_from(FAISS.from_documents(batch, embeddings))
+        gc.collect()
     return vs
 
 
-def load_chunks() -> list:
-    if not DOCS_PICKLE.exists():
+# ─── Index build / load / update (accept custom paths) ───────────────────────
+def build_index(chunks: list, index_path: str = None, pickle_path: str = None) -> FAISS:
+    ip = Path(index_path) if index_path else INDEX_PATH
+    pp = Path(pickle_path) if pickle_path else DOCS_PICKLE
+    ip.mkdir(parents=True, exist_ok=True)
+    vs = _build_faiss_batched(chunks, get_embeddings())
+    vs.save_local(str(ip))
+    with open(pp, "wb") as f:
+        pickle.dump(chunks, f)
+    logger.info(f"Index built — {len(chunks)} chunks → {ip}")
+    return vs
+
+
+def update_index(new_chunks: list, manifest: dict,
+                 index_path: str = None, pickle_path: str = None,
+                 manifest_path: str = None) -> FAISS:
+    ip = Path(index_path) if index_path else INDEX_PATH
+    pp = Path(pickle_path) if pickle_path else DOCS_PICKLE
+    emb = get_embeddings()
+
+    if ip.exists() and pp.exists():
+        vs = FAISS.load_local(str(ip), emb, allow_dangerous_deserialization=True)
+        if new_chunks:
+            vs.merge_from(_build_faiss_batched(new_chunks, emb))
+        with open(pp, "rb") as f:
+            all_chunks = pickle.load(f) + new_chunks
+    else:
+        if not new_chunks:
+            raise ValueError("No documents to index.")
+        vs = _build_faiss_batched(new_chunks, emb)
+        all_chunks = new_chunks
+
+    ip.mkdir(parents=True, exist_ok=True)
+    vs.save_local(str(ip))
+    with open(pp, "wb") as f:
+        pickle.dump(all_chunks, f)
+    _save_manifest(manifest, manifest_path)
+    logger.info(f"Index updated — {len(all_chunks)} chunks")
+    return vs
+
+
+def load_index(index_path: str = None) -> FAISS:
+    ip = Path(index_path) if index_path else INDEX_PATH
+    if not ip.exists():
+        raise FileNotFoundError("No index found.")
+    return FAISS.load_local(str(ip), get_embeddings(), allow_dangerous_deserialization=True)
+
+
+def load_chunks(pickle_path: str = None) -> list:
+    pp = Path(pickle_path) if pickle_path else DOCS_PICKLE
+    if not pp.exists():
         return []
-    with open(DOCS_PICKLE, "rb") as f:
+    with open(pp, "rb") as f:
         return pickle.load(f)
 
 
-# ─── Hybrid Retriever ─────────────────────────────────────────────────────────
-
-def build_hybrid_retriever(vectorstore: FAISS, chunks: list):
-    faiss_retriever = vectorstore.as_retriever(
+# ─── Retriever ────────────────────────────────────────────────────────────────
+def build_hybrid_retriever(vs: FAISS, chunks: list):
+    faiss_r = vs.as_retriever(
         search_type="mmr",
         search_kwargs={"k": settings.RETRIEVER_TOP_K, "fetch_k": settings.RETRIEVER_TOP_K * 3},
     )
     if not chunks:
-        return faiss_retriever
+        return faiss_r
     bm25 = BM25Retriever.from_documents(chunks)
     bm25.k = settings.RETRIEVER_TOP_K
-    return EnsembleRetriever(retrievers=[bm25, faiss_retriever], weights=[0.4, 0.6])
+    return EnsembleRetriever(retrievers=[bm25, faiss_r], weights=[0.4, 0.6])
 
 
 # ─── Prompts ──────────────────────────────────────────────────────────────────
-
 QA_PROMPT = PromptTemplate.from_template(
     """You are a helpful assistant answering questions from uploaded documents.
-Rules:
 - Answer ONLY from the provided context.
-- If the answer is not in the context, say "I don't have enough information to answer that."
-- Do NOT make up facts. Cite source filename and page when relevant.
+- If not in context, say "I don't have enough information to answer that."
+- Cite source filename and page when relevant.
 
 Context:
 {context}
 
 Question: {question}
-Answer:"""
-)
+Answer:""")
 
 CONDENSE_PROMPT = PromptTemplate.from_template(
-    """Given the conversation and a follow-up question, rephrase it as a standalone question.
-
-Chat History:
-{chat_history}
-
+    """Rephrase the follow-up as a standalone question.
+Chat History: {chat_history}
 Follow-up: {question}
-Standalone question:"""
-)
+Standalone question:""")
 
 ROUTING_PROMPT = PromptTemplate.from_template(
-    """You are a query router. Given retrieved document excerpts and a question,
-respond with ONLY one word: "RELEVANT" or "OFF_TOPIC".
-
-Context:
-{context}
-
+    """Respond ONLY with "RELEVANT" or "OFF_TOPIC".
+Context: {context}
 Question: {question}
-Decision:"""
-)
+Decision:""")
 
 
-# ─── Query Routing ────────────────────────────────────────────────────────────
-
+# ─── Query routing ────────────────────────────────────────────────────────────
 def check_query_relevance(question: str, context_docs: list) -> bool:
     preview = "\n---\n".join(d.page_content[:400] for d in context_docs[:4])
     if not preview.strip():
@@ -339,13 +271,12 @@ def check_query_relevance(question: str, context_docs: list) -> bool:
         result = llm.invoke(ROUTING_PROMPT.format(context=preview, question=question))
         return "RELEVANT" in result.content.strip().upper()
     except Exception as e:
-        logger.warning(f"Routing check failed (defaulting RELEVANT): {e}")
+        logger.warning(f"Routing failed (defaulting RELEVANT): {e}")
         return True
 
 
 # ─── QA Chain ─────────────────────────────────────────────────────────────────
-
-def build_qa_chain(vectorstore: FAISS, chunks: list = None) -> ConversationalRetrievalChain:
+def build_qa_chain(vs: FAISS, chunks: list = None) -> ConversationalRetrievalChain:
     llm = ChatGroq(
         model=settings.LLM_MODEL,
         temperature=settings.LLM_TEMPERATURE,
@@ -355,9 +286,7 @@ def build_qa_chain(vectorstore: FAISS, chunks: list = None) -> ConversationalRet
         memory_key="chat_history", return_messages=True,
         output_key="answer", k=settings.MEMORY_WINDOW_K,
     )
-    if chunks is None:
-        chunks = load_chunks()
-    retriever = build_hybrid_retriever(vectorstore, chunks)
+    retriever = build_hybrid_retriever(vs, chunks or [])
     return ConversationalRetrievalChain.from_llm(
         llm=llm, retriever=retriever, memory=memory,
         return_source_documents=True,
@@ -368,18 +297,17 @@ def build_qa_chain(vectorstore: FAISS, chunks: list = None) -> ConversationalRet
 
 
 # ─── Answer ───────────────────────────────────────────────────────────────────
-
 def answer_query(chain, question: str) -> Tuple[str, List[dict]]:
     try:
         vs = chain.retriever.retrievers[1].vectorstore
     except (AttributeError, IndexError):
         try: vs = chain.retriever.vectorstore
-        except AttributeError: vs = None
+        except: vs = None
 
-    if vs is not None:
+    if vs:
         probe = vs.similarity_search(question, k=3)
         if not check_query_relevance(question, probe):
-            return ("⚠️ This question doesn't appear to be covered by your uploaded documents.", [])
+            return "⚠️ This question doesn't appear to be covered by your uploaded documents.", []
 
     result = chain.invoke({"question": question})
     seen, sources = set(), []
@@ -398,9 +326,9 @@ async def answer_query_stream(chain, question: str) -> AsyncGenerator[str, None]
         vs = chain.retriever.retrievers[1].vectorstore
     except (AttributeError, IndexError):
         try: vs = chain.retriever.vectorstore
-        except AttributeError: vs = None
+        except: vs = None
 
-    if vs is not None:
+    if vs:
         probe = vs.similarity_search(question, k=3)
         if not check_query_relevance(question, probe):
             yield "⚠️ This question doesn't appear to be covered by your uploaded documents."

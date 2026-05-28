@@ -235,7 +235,8 @@
       background: var(--text-muted);
       flex-shrink: 0;
     }
-    .dot.green { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .dot.green  { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .dot.orange { background: var(--warning); box-shadow: 0 0 6px var(--warning); }
     .dot.red   { background: var(--error);   box-shadow: 0 0 6px var(--error); }
 
     .upload-area {
@@ -773,7 +774,7 @@ function confirmResolve(val) {
 // ── Document list ─────────────────────────────────────────────────────────────
 async function loadDocuments() {
   try {
-    const r = await fetch(`${API}/documents`);
+    const r = await fetch(`${API}/documents${sessionId ? '?session_id='+sessionId : ''}`);
     if (!r.ok) return;
     const { files } = await r.json();
     renderDocList(files);
@@ -825,11 +826,13 @@ async function deleteDocument(filename) {
 
 async function loadStats() {
   try {
-    const r = await fetch(`${API}/stats`);
+    const r = await fetch(`${API}/stats${sessionId ? '?session_id='+sessionId : ''}`);
     if (!r.ok) return;
     const d = await r.json();
     document.getElementById('index-dot').className = 'dot ' + (d.index_ready ? 'green' : 'red');
-    document.getElementById('index-status').textContent = d.index_ready ? 'Index ready' : 'No index — ingest first';
+    const statusMap = { idle: d.index_ready ? 'Index ready' : 'No index — ingest first', indexing: 'Indexing…', done: 'Index ready' };
+        document.getElementById('index-status').textContent = statusMap[d.ingest_status] || d.ingest_status;
+        document.getElementById('index-dot').className = 'dot ' + (d.index_ready || d.ingest_status === 'done' ? 'green' : d.ingest_status === 'indexing' ? 'orange' : 'red');
     document.getElementById('model-status').textContent = d.model;
     document.getElementById('model-badge').textContent = d.model;
     document.getElementById('stat-chunks').textContent = d.num_chunks.toLocaleString();
@@ -937,10 +940,12 @@ async function uploadAndIngest() {
       fd.append('file', f);
 
       // Upload returns instantly — ingest runs in background on server
+      if (sessionId) fd.append('session_id', sessionId);
       const r = await fetch(`${API}/upload`, { method: 'POST', body: fd });
       const d = await r.json().catch(() => null);
 
       if (r.ok && d) {
+        if (d.session_id && !sessionId) { sessionId = d.session_id; localStorage.setItem('rag_session', sessionId); updateSessionDisplay(); }
         setFileStatus(listIdx, 'done', f.name);
         toast(`✅ "${f.name}" uploaded — indexing in background…`, 'success');
 
@@ -976,7 +981,7 @@ async function pollForIngestCompletion() {
 
   const poll = async () => {
     try {
-      const r = await fetch(`${API}/stats`);
+      const r = await fetch(`${API}/stats${sessionId ? '?session_id='+sessionId : ''}`);
       if (r.ok) {
         const d = await r.json();
         document.getElementById('stat-chunks').textContent = d.num_chunks.toLocaleString();
@@ -1016,7 +1021,7 @@ async function doIngest(full = false) {
 
   const endpoint = full ? '/ingest/full' : '/ingest';
   try {
-    const r = await fetch(`${API}${endpoint}`, { method: 'POST' });
+    const r = await fetch(`${API}${endpoint}${sessionId ? '?session_id='+sessionId : ''}`, { method: 'POST' });
     const d = await r.json().catch(() => ({ detail: 'Bad response' }));
     if (!r.ok) throw new Error(d.detail || 'Ingest failed');
     toast(`✅ ${d.message} (${d.num_chunks} chunks)`, 'success');
