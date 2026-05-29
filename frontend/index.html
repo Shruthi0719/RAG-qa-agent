@@ -480,6 +480,7 @@
     .toast.success { border-left: 3px solid var(--success); }
     .toast.error   { border-left: 3px solid var(--error); }
     .toast.info    { border-left: 3px solid var(--accent); }
+    .toast.warning { border-left: 3px solid var(--warning); }
 
     /* Progress bar */
     .progress-bar-wrap {
@@ -725,6 +726,22 @@ setTimeout(() => {
 
 // ── Startup ──────────────────────────────────────────────────────────────────
 (async function init() {
+  // If we have a stored session, validate it's still alive on the server.
+  // Render /tmp resets on every restart so old sessions disappear.
+  if (sessionId) {
+    try {
+      const r = await fetch(`${API}/stats?session_id=${sessionId}`, { cache: 'no-store' });
+      if (r.ok) {
+        const d = await r.json();
+        // Server has no data for this session — it was wiped on restart
+        if (!d.index_ready && d.num_chunks === 0) {
+          sessionId = null;
+          localStorage.removeItem('rag_session');
+          toast('Server restarted — please re-upload your documents.', 'warning');
+        }
+      }
+    } catch {}
+  }
   updateSessionDisplay();
 
   // Poll /health until server is up, then hide loader
@@ -945,7 +962,7 @@ async function uploadAndIngest() {
       const d = await r.json().catch(() => null);
 
       if (r.ok && d) {
-        if (d.session_id && !sessionId) { sessionId = d.session_id; localStorage.setItem('rag_session', sessionId); updateSessionDisplay(); }
+        if (d.session_id) { sessionId = d.session_id; localStorage.setItem('rag_session', sessionId); updateSessionDisplay(); }
         setFileStatus(listIdx, 'done', f.name);
         toast(`✅ "${f.name}" uploaded — indexing in background…`, 'success');
 
