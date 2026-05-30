@@ -29,6 +29,7 @@
       background: var(--bg);
       color: var(--text);
       height: 100vh;
+      height: 100dvh; /* mobile browsers: excludes address bar + nav bar */
       display: flex;
       overflow: hidden;
     }
@@ -304,6 +305,7 @@
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      min-height: 0;
     }
 
     #topbar {
@@ -534,7 +536,7 @@
       #sidebar.open { transform: translateX(0); }
       .msg { max-width: 100%; }
       .bubble { font-size: 0.85rem; padding: 10px 12px; max-width: calc(100vw - 70px); }
-      #input-area { padding: 10px 12px; }
+      #input-area { padding: 10px 12px; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
       #question-input { font-size: 16px; }
       #messages { padding: 16px 12px; }
       #topbar { padding: 10px 14px; }
@@ -846,15 +848,21 @@ async function loadStats() {
     const r = await fetch(`${API}/stats${sessionId ? '?session_id='+sessionId : ''}`);
     if (!r.ok) return;
     const d = await r.json();
-    document.getElementById('index-dot').className = 'dot ' + (d.index_ready ? 'green' : 'red');
-    const statusMap = { idle: d.index_ready ? 'Index ready' : 'No index — ingest first', indexing: 'Indexing…', done: 'Index ready' };
-        document.getElementById('index-status').textContent = statusMap[d.ingest_status] || d.ingest_status;
-        document.getElementById('index-dot').className = 'dot ' + (d.index_ready || d.ingest_status === 'done' ? 'green' : d.ingest_status === 'indexing' ? 'orange' : 'red');
-    document.getElementById('model-status').textContent = d.model;
-    document.getElementById('model-badge').textContent = d.model;
-    document.getElementById('stat-chunks').textContent = d.num_chunks.toLocaleString();
-    document.getElementById('stat-files').textContent = d.num_files;
-    document.getElementById('stat-sessions').textContent = d.active_sessions;
+    const st = d.ingest_status || 'idle';
+    const isError = st.startsWith('error:');
+    const statusText = {
+      idle: d.index_ready ? 'Index ready' : 'No index — upload & ingest first',
+      indexing: 'Indexing…',
+      done: 'Index ready',
+    }[st] || (isError ? 'Ingest failed — try Full Rebuild' : 'Index ready');
+    const dotColor = d.index_ready || st === 'done' ? 'green' : st === 'indexing' ? 'orange' : isError ? 'red' : 'red';
+    document.getElementById('index-dot').className = `dot ${dotColor}`;
+    document.getElementById('index-status').textContent = statusText;
+    document.getElementById('model-status').textContent = d.model || '';
+    document.getElementById('model-badge').textContent = d.model || '';
+    document.getElementById('stat-chunks').textContent = (d.num_chunks || 0).toLocaleString();
+    document.getElementById('stat-files').textContent = d.num_files || 0;
+    document.getElementById('stat-sessions').textContent = d.active_sessions || 0;
   } catch {}
 }
 
@@ -962,7 +970,12 @@ async function uploadAndIngest() {
       const d = await r.json().catch(() => null);
 
       if (r.ok && d) {
-        if (d.session_id) { sessionId = d.session_id; localStorage.setItem('rag_session', sessionId); updateSessionDisplay(); }
+        // Save session_id IMMEDIATELY — this is the user's persistent session
+        if (d.session_id) {
+          sessionId = d.session_id;
+          localStorage.setItem('rag_session', sessionId);
+          updateSessionDisplay();
+        }
         setFileStatus(listIdx, 'done', f.name);
         toast(`✅ "${f.name}" uploaded — indexing in background…`, 'success');
 
@@ -971,6 +984,9 @@ async function uploadAndIngest() {
           const idx = pendingFiles.indexOf(f);
           if (idx > -1) { pendingFiles.splice(idx, 1); renderFileList(); }
         }, 1500);
+
+        // Refresh documents list immediately
+        await loadDocuments();
 
       } else {
         setFileStatus(listIdx, 'error', f.name);
@@ -992,25 +1008,35 @@ async function uploadAndIngest() {
 }
 
 async function pollForIngestCompletion() {
-  const startChunks = parseInt(document.getElementById('stat-chunks').textContent) || 0;
   let attempts = 0;
-  const maxAttempts = 40; // 40 × 3s = 2 min max
+  const maxAttempts = 60; // 60 × 3s = 3 min max
 
   const poll = async () => {
+    if (!sessionId) return;
     try {
-      const r = await fetch(`${API}/stats${sessionId ? '?session_id='+sessionId : ''}`);
+      const r = await fetch(`${API}/stats?session_id=${sessionId}`);
       if (r.ok) {
         const d = await r.json();
-        document.getElementById('stat-chunks').textContent = d.num_chunks.toLocaleString();
-        document.getElementById('stat-files').textContent = d.num_files;
-        document.getElementById('index-dot').className = 'dot ' + (d.index_ready ? 'green' : 'red');
-        document.getElementById('index-status').textContent = d.index_ready ? 'Index ready' : 'Indexing…';
+        document.getElementById('stat-chunks').textContent = (d.num_chunks || 0).toLocaleString();
+        document.getElementById('stat-files').textContent = d.num_files || 0;
 
-        if (d.num_chunks > startChunks || d.index_ready) {
+        const st = d.ingest_status || 'idle';
+        if (st === 'done' || d.index_ready) {
+          document.getElementById('index-dot').className = 'dot green';
+          document.getElementById('index-status').textContent = 'Index ready';
           await loadDocuments();
           toast('✅ Indexing complete — ready to chat!', 'success');
-          return; // done
+          return;
         }
+        if (st.startsWith('error:')) {
+          document.getElementById('index-dot').className = 'dot red';
+          document.getElementById('index-status').textContent = 'Ingest failed — try Full Rebuild';
+          toast('Ingest failed. Try clicking Full Rebuild.', 'error');
+          return;
+        }
+        // Still indexing
+        document.getElementById('index-dot').className = 'dot orange';
+        document.getElementById('index-status').textContent = 'Indexing…';
       }
     } catch {}
 
@@ -1020,7 +1046,7 @@ async function pollForIngestCompletion() {
     }
   };
 
-  setTimeout(poll, 3000); // first check after 3s
+  setTimeout(poll, 3000);
 }
 
 // ── Manual ingest (for explicit button clicks) ────────────────────────────────
